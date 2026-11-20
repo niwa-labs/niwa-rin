@@ -25,6 +25,10 @@ describe("check-boundaries", () => {
     expect(checkGraph()).toEqual([]);
   });
 
+  test("the script package offers its api entry", () => {
+    expect(GRAPH["@niwa-labs/script"]?.entries).toEqual([".", "./api"]);
+  });
+
   test("accepts an import through a declared, exported entry", () => {
     const sessions = pkg("@niwa-labs/sessions", `import type { X } from "@niwa-labs/history/records";`, {
       deps: { "@niwa-labs/history": "workspace:*" },

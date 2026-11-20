@@ -65,7 +65,7 @@ const KIND_DEPS = { ...CONTRACTS, "@niwa-labs/harness": "*", "@niwa-labs/sandbox
 
 const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   // Zone I: needs no host; at most the contracts entry of core.
-  "@niwa-labs/script": lib(),
+  "@niwa-labs/script": { ...lib(), entries: [".", "./api"] },
   "@niwa-labs/flow": lib({ "@niwa-labs/script": "*" }),
   "@niwa-labs/harness": lib({ ...CONTRACTS, "@niwa-labs/sandbox": "*" }),
   "@niwa-labs/acp": lib({ ...CONTRACTS, "@niwa-labs/harness": "*" }),
