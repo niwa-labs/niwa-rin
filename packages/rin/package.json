@@ -12,6 +12,7 @@
     "@niwa-labs/delegate": "*",
     "@niwa-labs/history": "*",
     "@niwa-labs/memory": "*",
-    "@niwa-labs/plugin": "*"
+    "@niwa-labs/plugin": "*",
+    "@niwa-labs/script": "*"
   }
 }

@@ -20,6 +20,7 @@
         "@niwa-labs/history": "*",
         "@niwa-labs/memory": "*",
         "@niwa-labs/plugin": "*",
+        "@niwa-labs/script": "*",
       },
     },
   },
@@ -37,8 +38,11 @@
     "@niwa-labs/plugin": "link:../niwa/packages/plugin",
     "@niwa-labs/requests": "link:../niwa/packages/requests",
     "@niwa-labs/sandbox": "link:../niwa/packages/sandbox",
+    "@niwa-labs/script": "link:../niwa/packages/script",
     "@niwa-labs/sessions": "link:../niwa/packages/sessions",
     "@niwa-labs/tasks": "link:../niwa/packages/tasks",
+    "@niwa-labs/timer": "link:../niwa/packages/timer",
+    "@niwa-labs/workflow": "link:../niwa/packages/workflow",
   },
   "packages": {
     "@niwa-labs/agent": ["@niwa-labs/agent@link:../niwa/packages/agent", {}],
@@ -56,6 +60,8 @@
     "@niwa-labs/plugin": ["@niwa-labs/plugin@link:../niwa/packages/plugin", {}],
 
     "@niwa-labs/rin": ["@niwa-labs/rin@workspace:packages/rin"],
+
+    "@niwa-labs/script": ["@niwa-labs/script@link:../niwa/packages/script", {}],
 
     "@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
 

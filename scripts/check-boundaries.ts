@@ -37,6 +37,8 @@ const ROOT = ["."] as const;
 const PLUGIN = [".", "./records"] as const;
 const PLUGIN_FLOW = [".", "./records", "./flow"] as const;
 const CONTRACTS = { "@niwa-labs/core": ROOT } as const;
+const SCRIPT_TYPES = { "@niwa-labs/script": "*" } as const;
+const RECORDS = ["./records"] as const;
 const ON_HOST = { "@niwa-labs/plugin": "*", ...CONTRACTS } as const;
 
 function lib(deps: PackageSpec["deps"] = {}): PackageSpec {
@@ -47,25 +49,27 @@ function basePlugin(deps: PackageSpec["deps"] = {}, entries: readonly string[] =
   return { repo: "niwa", zone: "built", kind: "plugin", entries, deps: { ...ON_HOST, ...deps } };
 }
 
-function extraPlugin(entries: readonly string[] = PLUGIN): PackageSpec {
-  return { repo: "plugins", zone: "built", kind: "plugin", entries, deps: ON_HOST };
+function extraPlugin(deps: PackageSpec["deps"] = {}, entries: readonly string[] = PLUGIN): PackageSpec {
+  return { repo: "plugins", zone: "built", kind: "plugin", entries, deps: { ...ON_HOST, ...deps } };
 }
 
 function leaf(kind: Kind, deps: PackageSpec["deps"], repo: Repo = "niwa"): PackageSpec {
   return { repo, zone: "leaf", kind, entries: ROOT, deps };
 }
 
+const KIND_DEPS = { ...CONTRACTS, "@niwa-labs/harness": "*", "@niwa-labs/sandbox": "*" } as const;
+
 const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   // Zone I: needs no host; at most the contracts entry of core.
   "@niwa-labs/script": lib(),
   "@niwa-labs/flow": lib({ "@niwa-labs/script": "*" }),
-  "@niwa-labs/harness": lib(CONTRACTS),
-  "@niwa-labs/acp": lib({ "@niwa-labs/harness": "*" }),
-  "@niwa-labs/harness-claude": lib({ "@niwa-labs/harness": "*", "@niwa-labs/acp": "*" }),
-  "@niwa-labs/harness-mcode": lib({ "@niwa-labs/harness": "*", "@niwa-labs/acp": "*" }),
-  "@niwa-labs/harness-codex": lib({ "@niwa-labs/harness": "*" }),
-  "@niwa-labs/harness-pi": lib({ "@niwa-labs/harness": "*" }),
-  "@niwa-labs/harness-zcode": lib({ "@niwa-labs/harness": "*" }),
+  "@niwa-labs/harness": lib({ ...CONTRACTS, "@niwa-labs/sandbox": "*" }),
+  "@niwa-labs/acp": lib({ ...CONTRACTS, "@niwa-labs/harness": "*" }),
+  "@niwa-labs/harness-claude": lib({ ...KIND_DEPS, "@niwa-labs/acp": "*" }),
+  "@niwa-labs/harness-mcode": lib({ ...KIND_DEPS, "@niwa-labs/acp": "*" }),
+  "@niwa-labs/harness-codex": lib(KIND_DEPS),
+  "@niwa-labs/harness-pi": lib(KIND_DEPS),
+  "@niwa-labs/harness-zcode": lib(KIND_DEPS),
   "@niwa-labs/digest": lib({ "@niwa-labs/harness": "*" }),
   "@niwa-labs/sandbox": lib(),
   "@niwa-labs/ui-kit": lib(),
@@ -84,9 +88,9 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
 
   // Zone III: base plugins.
   "@niwa-labs/requests": basePlugin(),
-  "@niwa-labs/tasks": basePlugin(),
+  "@niwa-labs/tasks": basePlugin({ "@niwa-labs/messages": "*" }),
   "@niwa-labs/timer": basePlugin(),
-  "@niwa-labs/git": basePlugin(),
+  "@niwa-labs/git": basePlugin(SCRIPT_TYPES),
   "@niwa-labs/proc": basePlugin({}, PLUGIN_FLOW),
   "@niwa-labs/history": basePlugin({ "@niwa-labs/harness": "*", "@niwa-labs/digest": "*" }, PLUGIN_FLOW),
   "@niwa-labs/sessions": basePlugin({
@@ -103,8 +107,10 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
     "@niwa-labs/messages": "*",
     "@niwa-labs/requests": "*",
     "@niwa-labs/tasks": "*",
+    ...SCRIPT_TYPES,
   }),
   "@niwa-labs/workflow": basePlugin({
+    "@niwa-labs/harness": "*",
     "@niwa-labs/sessions": "*",
     "@niwa-labs/git": "*",
     "@niwa-labs/requests": "*",
@@ -135,19 +141,52 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/cockpit": leaf("app", { "@niwa-labs/cockpit-sdk": "*", "@niwa-labs/ui-kit": "*", "@niwa-labs/client": "*" }),
   "@niwa-labs/cli": leaf("surface", { "@niwa-labs/client": "*", ...CONTRACTS }),
   "@niwa-labs/mcp": leaf("surface", { "@niwa-labs/client": "*", ...CONTRACTS }),
-  "@niwa-labs/web": leaf("surface", { "@niwa-labs/host": "*", "@niwa-labs/client": "*", ...CONTRACTS }),
-  "@niwa-labs/telegram": leaf("surface", { "@niwa-labs/client": "*", ...CONTRACTS }),
-  "@niwa-labs/testing": leaf("testing", { "@niwa-labs/host": "*", "@niwa-labs/harness": "*", "@niwa-labs/workflow": "*" }),
+  "@niwa-labs/web": leaf("surface", { "@niwa-labs/client": "*", ...CONTRACTS }),
+  "@niwa-labs/telegram": leaf("surface", {
+    "@niwa-labs/client": "*",
+    "@niwa-labs/plugin": "*",
+    "@niwa-labs/messages": "*",
+    "@niwa-labs/requests": "*",
+    ...CONTRACTS,
+  }),
+  "@niwa-labs/testing": leaf("testing", {
+    "@niwa-labs/host": "*",
+    "@niwa-labs/harness": "*",
+    "@niwa-labs/workflow": "*",
+    "@niwa-labs/client": "*",
+    "@niwa-labs/sandbox": "*",
+    "@niwa-labs/requests": "*",
+    "@niwa-labs/tasks": "*",
+    "@niwa-labs/timer": "*",
+    "@niwa-labs/git": "*",
+    "@niwa-labs/history": "*",
+    "@niwa-labs/messages": "*",
+    "@niwa-labs/sessions": "*",
+    ...CONTRACTS,
+  }),
 };
 
 const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
-  "@niwa-labs/forge": extraPlugin(PLUGIN_FLOW),
+  "@niwa-labs/forge": extraPlugin({}, PLUGIN_FLOW),
   "@niwa-labs/watch": extraPlugin(),
   "@niwa-labs/evidence": extraPlugin(),
   "@niwa-labs/plan": extraPlugin(),
-  "@niwa-labs/memory": extraPlugin(),
-  "@niwa-labs/commitments": extraPlugin(),
-  "@niwa-labs/delegate": extraPlugin(),
+  "@niwa-labs/memory": extraPlugin({
+    "@niwa-labs/requests": RECORDS,
+    "@niwa-labs/agent": RECORDS,
+    ...SCRIPT_TYPES,
+  }),
+  "@niwa-labs/commitments": extraPlugin({
+    "@niwa-labs/agent": RECORDS,
+    "@niwa-labs/requests": RECORDS,
+    "@niwa-labs/tasks": RECORDS,
+    ...SCRIPT_TYPES,
+  }),
+  "@niwa-labs/delegate": extraPlugin({
+    "@niwa-labs/requests": RECORDS,
+    "@niwa-labs/workflow": RECORDS,
+    ...SCRIPT_TYPES,
+  }),
 
   // Compositions assemble their modules, so they import factories directly.
   "@niwa-labs/rin": leaf(
@@ -158,6 +197,7 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
       "@niwa-labs/commitments": "*",
       "@niwa-labs/delegate": "*",
       "@niwa-labs/history": "*",
+      ...SCRIPT_TYPES,
       ...ON_HOST,
     },
     "rin",
@@ -170,6 +210,7 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
       "@niwa-labs/evidence": "*",
       "@niwa-labs/plan": "*",
       "@niwa-labs/flow-code": "*",
+      ...SCRIPT_TYPES,
       ...ON_HOST,
     },
     "pstack",

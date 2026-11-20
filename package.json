@@ -28,7 +28,10 @@
     "@niwa-labs/plugin": "link:../niwa/packages/plugin",
     "@niwa-labs/requests": "link:../niwa/packages/requests",
     "@niwa-labs/sandbox": "link:../niwa/packages/sandbox",
+    "@niwa-labs/script": "link:../niwa/packages/script",
     "@niwa-labs/sessions": "link:../niwa/packages/sessions",
-    "@niwa-labs/tasks": "link:../niwa/packages/tasks"
+    "@niwa-labs/tasks": "link:../niwa/packages/tasks",
+    "@niwa-labs/timer": "link:../niwa/packages/timer",
+    "@niwa-labs/workflow": "link:../niwa/packages/workflow"
   }
 }

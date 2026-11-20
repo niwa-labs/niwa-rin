@@ -85,6 +85,41 @@ describe("check-boundaries", () => {
     expect(rules([rin])).toEqual([]);
   });
 
+  test("lets tasks read message records but not the messages plugin itself", () => {
+    const deps = { "@niwa-labs/messages": "workspace:*" };
+    const ok = pkg("@niwa-labs/tasks", `import type { Message } from "@niwa-labs/messages/records";`, { deps });
+    expect(rules([ok, pkg("@niwa-labs/messages", "export {};")])).toEqual([]);
+    const root = pkg("@niwa-labs/tasks", `import { messages } from "@niwa-labs/messages";`, { deps });
+    expect(rules([root, pkg("@niwa-labs/messages", "export {};")])).toEqual(["plugin-entry"]);
+  });
+
+  test("lets extra plugins read base records only", () => {
+    const deps = { "@niwa-labs/agent": "*" };
+    const ok = pkg("@niwa-labs/memory", `import type { Mailbox } from "@niwa-labs/agent/records";`, { deps });
+    expect(rules([ok])).toEqual([]);
+    const root = pkg("@niwa-labs/memory", `import { agent } from "@niwa-labs/agent";`, { deps });
+    expect(rules([root])).toEqual(["graph", "plugin-entry"]);
+    const tasks = pkg("@niwa-labs/memory", `import type { Task } from "@niwa-labs/tasks/records";`, {
+      deps: { "@niwa-labs/tasks": "*" },
+    });
+    expect(rules([tasks])).toContain("graph");
+  });
+
+  test("lets harness kinds use core and sandbox", () => {
+    const deps = { "@niwa-labs/core": "*", "@niwa-labs/sandbox": "*", "@niwa-labs/harness": "*" };
+    const kind = pkg(
+      "@niwa-labs/harness-pi",
+      `import type { Timestamp } from "@niwa-labs/core";\nimport { spawnAgent } from "@niwa-labs/sandbox";`,
+      { deps },
+    );
+    expect(rules([kind])).toEqual([]);
+  });
+
+  test("keeps the web surface off the host", () => {
+    const web = pkg("@niwa-labs/web", `import { createNiwa } from "@niwa-labs/host";`, { deps: { "@niwa-labs/host": "*" } });
+    expect(rules([web])).toContain("graph");
+  });
+
   test("rejects an import of a package missing from package.json", () => {
     const flow = pkg("@niwa-labs/flow", `import type { FlowRuntime } from "@niwa-labs/script";`);
     expect(rules([flow])).toEqual(["undeclared"]);
