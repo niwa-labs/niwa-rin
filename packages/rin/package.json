@@ -1,0 +1,17 @@
+{
+  "name": "@niwa-labs/rin",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/agent": "*",
+    "@niwa-labs/commitments": "*",
+    "@niwa-labs/core": "*",
+    "@niwa-labs/delegate": "*",
+    "@niwa-labs/history": "*",
+    "@niwa-labs/memory": "*",
+    "@niwa-labs/plugin": "*"
+  }
+}

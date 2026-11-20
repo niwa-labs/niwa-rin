@@ -1,0 +1,70 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "rin-workspace",
+      "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "typescript": "~5.9.3",
+      },
+    },
+    "packages/rin": {
+      "name": "@niwa-labs/rin",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/agent": "*",
+        "@niwa-labs/commitments": "*",
+        "@niwa-labs/core": "*",
+        "@niwa-labs/delegate": "*",
+        "@niwa-labs/history": "*",
+        "@niwa-labs/memory": "*",
+        "@niwa-labs/plugin": "*",
+      },
+    },
+  },
+  "overrides": {
+    "@niwa-labs/agent": "link:../niwa/packages/agent",
+    "@niwa-labs/commitments": "link:../plugins/packages/commitments",
+    "@niwa-labs/core": "link:../niwa/packages/core",
+    "@niwa-labs/delegate": "link:../plugins/packages/delegate",
+    "@niwa-labs/digest": "link:../niwa/packages/digest",
+    "@niwa-labs/git": "link:../niwa/packages/git",
+    "@niwa-labs/harness": "link:../niwa/packages/harness",
+    "@niwa-labs/history": "link:../niwa/packages/history",
+    "@niwa-labs/memory": "link:../plugins/packages/memory",
+    "@niwa-labs/messages": "link:../niwa/packages/messages",
+    "@niwa-labs/plugin": "link:../niwa/packages/plugin",
+    "@niwa-labs/requests": "link:../niwa/packages/requests",
+    "@niwa-labs/sandbox": "link:../niwa/packages/sandbox",
+    "@niwa-labs/sessions": "link:../niwa/packages/sessions",
+    "@niwa-labs/tasks": "link:../niwa/packages/tasks",
+  },
+  "packages": {
+    "@niwa-labs/agent": ["@niwa-labs/agent@link:../niwa/packages/agent", {}],
+
+    "@niwa-labs/commitments": ["@niwa-labs/commitments@link:../plugins/packages/commitments", {}],
+
+    "@niwa-labs/core": ["@niwa-labs/core@link:../niwa/packages/core", {}],
+
+    "@niwa-labs/delegate": ["@niwa-labs/delegate@link:../plugins/packages/delegate", {}],
+
+    "@niwa-labs/history": ["@niwa-labs/history@link:../niwa/packages/history", {}],
+
+    "@niwa-labs/memory": ["@niwa-labs/memory@link:../plugins/packages/memory", {}],
+
+    "@niwa-labs/plugin": ["@niwa-labs/plugin@link:../niwa/packages/plugin", {}],
+
+    "@niwa-labs/rin": ["@niwa-labs/rin@workspace:packages/rin"],
+
+    "@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
+
+    "@types/node": ["@types/node@26.6.6", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog=="],
+
+    "bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
+  }
+}
