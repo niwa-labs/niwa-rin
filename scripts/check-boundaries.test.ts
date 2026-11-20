@@ -73,6 +73,25 @@ describe("check-boundaries", () => {
     expect(rules([viaFlow])).toContain("plugin-entry");
   });
 
+  test("lets sessions import the root entry of history, and no other plugin may", () => {
+    const sessions = pkg("@niwa-labs/sessions", `import { readTranscript } from "@niwa-labs/history";`, {
+      deps: { "@niwa-labs/history": "workspace:*" },
+    });
+    const history = pkg("@niwa-labs/history", "export {};");
+    expect(rules([sessions, history])).toEqual([]);
+    const agent = pkg("@niwa-labs/agent", `import { readTranscript } from "@niwa-labs/history";`, {
+      deps: { "@niwa-labs/history": "workspace:*" },
+    });
+    expect(rules([agent, history])).toEqual(["plugin-entry"]);
+  });
+
+  test("lets testing build plugins on the plugin package", () => {
+    const testing = pkg("@niwa-labs/testing", `import { plugin } from "@niwa-labs/plugin";`, {
+      deps: { "@niwa-labs/plugin": "workspace:*" },
+    });
+    expect(rules([testing, pkg("@niwa-labs/plugin", "export {};")])).toEqual([]);
+  });
+
   test("allows /flow of a plugin from scripts", () => {
     const flowCode = pkg("@niwa-labs/flow-code", `import { runCheck } from "@niwa-labs/proc/flow";`, {
       deps: { "@niwa-labs/proc": "*" },

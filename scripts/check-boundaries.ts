@@ -41,6 +41,10 @@ const SCRIPT_TYPES = { "@niwa-labs/script": "*" } as const;
 const RECORDS = ["./records"] as const;
 const ON_HOST = { "@niwa-labs/plugin": "*", ...CONTRACTS } as const;
 
+// History keeps no state of its own: it reads and searches transcripts, and sessions calls it while
+// it runs. Sessions may therefore import its root entry, not only its records.
+const ROOT_READERS: Readonly<Record<string, readonly string[]>> = { "@niwa-labs/history": ["@niwa-labs/sessions"] };
+
 function lib(deps: PackageSpec["deps"] = {}): PackageSpec {
   return { repo: "niwa", zone: "independent", kind: "library", entries: ROOT, deps };
 }
@@ -162,6 +166,7 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
     "@niwa-labs/history": "*",
     "@niwa-labs/messages": "*",
     "@niwa-labs/sessions": "*",
+    "@niwa-labs/plugin": "*",
     ...CONTRACTS,
   }),
 };
@@ -381,7 +386,8 @@ export function checkPackages(
 
         if (target.kind === "plugin" && (spec.kind === "plugin" || spec.kind === "script-library")) {
           const scripted = spec.kind === "script-library" || isFlowFile(pkg.dir, file.path);
-          const ok = parsed.entry === "./records" || (scripted && parsed.entry === "./flow");
+          const reads = parsed.entry === "." && (ROOT_READERS[parsed.name] ?? []).includes(name);
+          const ok = parsed.entry === "./records" || reads || (scripted && parsed.entry === "./flow");
           if (!ok) {
             const allowed = scripted ? "/records or /flow" : "/records";
             report(file.path, "plugin-entry", `${name} must import plugin ${parsed.name} only through ${allowed}`);
