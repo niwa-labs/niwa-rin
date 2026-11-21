@@ -109,6 +109,20 @@ describe("check-boundaries", () => {
     expect(rules([rin])).toEqual([]);
   });
 
+  test("lets pstack's scripts use the flow libraries and start a session through the records of sessions only", () => {
+    const deps = { "@niwa-labs/flow": "*", "@niwa-labs/flow-eval": "*", "@niwa-labs/flow-code": "*", "@niwa-labs/forge": "*", "@niwa-labs/sessions": "*" };
+    const source = [
+      `import { revise } from "@niwa-labs/flow";`,
+      `import { evalSuite } from "@niwa-labs/flow-eval";`,
+      `import { makeWorktree } from "@niwa-labs/flow-code";`,
+      `import { land } from "@niwa-labs/forge/flow";`,
+      `import { sessionStart } from "@niwa-labs/sessions/records";`,
+    ].join("\n");
+    expect(rules([pkg("@niwa-labs/pstack", source, { deps })])).toEqual([]);
+    const root = pkg("@niwa-labs/pstack", `import { sessions } from "@niwa-labs/sessions";`, { deps });
+    expect(rules([root])).toEqual(["graph"]);
+  });
+
   test("lets rin read base records, arm a timer and offer a cockpit page", () => {
     const deps = {
       "@niwa-labs/messages": "*",
