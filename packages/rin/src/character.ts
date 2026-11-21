@@ -148,14 +148,15 @@ export interface RinDefinitionOptions {
 
 /** Rin as the agents module serves her. */
 export function rinDefinition(options: RinDefinitionOptions): AgentOffer {
-  if ((options.harness === undefined) === (options.role === undefined)) {
+  const { harness, role } = options;
+  const seat = harness === undefined ? (role === undefined ? undefined : { role }) : (role === undefined ? { harness } : undefined);
+  if (seat === undefined) {
     throw new TypeError("rin: she runs on a harness or on a role, exactly one of them");
   }
   const selfEdit = options.selfEdit === true;
   return {
     name: RIN_AGENT,
-    ...(options.harness === undefined ? {} : { harness: options.harness }),
-    ...(options.role === undefined ? {} : { role: options.role }),
+    ...seat,
     character: (options.core ?? CORE).text,
     prompt: workText({ selfEdit }),
     hands: selfEdit ? [...HANDS, "rin.self.install"] : [...HANDS],
