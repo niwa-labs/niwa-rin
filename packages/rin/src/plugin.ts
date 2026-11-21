@@ -458,22 +458,30 @@ export function rinPlugin(options: RinOptions): Plugin {
     // ---- the owner in touch ---------------------------------------------------------------------------------
 
     /** What waits is brought up at a contact: what was held before it. */
-    const bring = (step: Step, contact: Contact, before: number): Promise<Item[]> =>
+    const bring = (step: Step, contact: Contact, before: number): Promise<void> =>
       serially(async () => {
         const items = heldItems(attention()).filter((item) => item.seq < before);
         if (items.length > 0) await step.emit(AttentionBrought, { items: items.map((item) => item.item), contact });
-        return items;
       });
 
     for (const source of [OwnerWroteToRin, OwnerWroteInToRin]) {
       api.on(source, { requires: [source.type] }, async (message: Message, step, stored) => {
-        const brought = await bring(step, { kind: "message", message: message.id }, stored.seq);
-        if (brought.length === 0) return;
-        const state = attention();
-        const lines = brought.map((item) => `- ${item.text}${countText(state, item)}`);
-        await step(agentNotify, { agent: RIN_AGENT, text: ["The owner is in touch now. What you held for him, to bring up as it fits:", ...lines].join("\n") });
+        await bring(step, { kind: "message", message: message.id }, stored.seq);
       });
     }
+
+    // She is told what was brought up when he wrote to her, from the record that says so: a restart between that
+    // record and her being told finds the record. An attach needs no telling: it answers with the briefing.
+    api.on(AttentionBrought, { id: "brought-told" }, async (data, step) => {
+      if (data.contact.kind !== "message") return;
+      const state = attention();
+      const lines = data.items.flatMap((id) => {
+        const item = state.items.get(id);
+        return item === undefined ? [] : [`- ${item.text}${countText(state, item)}`];
+      });
+      if (lines.length === 0) return;
+      await step(agentNotify, { agent: RIN_AGENT, text: ["The owner is in touch now. What you held for him, to bring up as it fits:", ...lines].join("\n") });
+    });
 
     // An attach of his session to her answers with her briefing, which shows what waited: it is brought up.
     api.on(AgentAttached, { id: "attached", filter: { agent: RIN_AGENT } }, async (data, step, stored) => {
@@ -694,13 +702,16 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // ---- the charter ----------------------------------------------------------------------------------------
 
-    // Corrections about one thing that repeat ask her for a rule: she words it, if one covers them.
+    // Corrections about one thing that repeat make a rule due; the record, not this handler, tells her.
     api.on(Corrected, { id: "consolidate" }, async (data, step) => {
       const due = dueFor(charter(), data.about, ruleAfter);
       if (due === undefined) return;
       await step.emit(CharterDue, { about: data.about, corrections: due });
-      const state = charter();
-      const lines = state.corrections.filter((one) => due.includes(one.correction)).map((one) => `- ${one.correction}: ${one.what}`);
+    });
+
+    // She is asked for a rule from the record of what is due, so that a restart between the two does not lose the ask.
+    api.on(CharterDue, { id: "rule-due" }, async (data, step) => {
+      const lines = charter().corrections.filter((one) => data.corrections.includes(one.correction)).map((one) => `- ${one.correction}: ${one.what}`);
       await step(agentNotify, {
         agent: RIN_AGENT,
         text: [

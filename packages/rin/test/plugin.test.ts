@@ -11,7 +11,7 @@ import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
 import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify } from "@niwa-labs/agent/records";
 import { messageSendRef } from "@niwa-labs/messages/records";
 import { ResolverRegistry, requests } from "@niwa-labs/requests";
-import { requestAnswer, requestAsk, requestCancel } from "@niwa-labs/requests/records";
+import { requestAnswer, requestAsk, requestCancel, requestOpen } from "@niwa-labs/requests/records";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 import { connect, connectAsOwner, createNiwa, eventually, messages, tempHome, testClock, timers } from "@niwa-labs/testing";
 import type { NiwaApi, TestClock } from "@niwa-labs/testing";
@@ -91,6 +91,10 @@ interface World {
   readonly lastOccasion: () => string;
   /** `on`: the send fails; `unsure`: it fails in a way that may have sent it, not as `NotSent`. */
   readonly failSay: { on: boolean; unsure: boolean };
+  /** How many of the next facts told to her fail: the handler that tells her pauses, as after a crash. */
+  readonly failTell: { times: number };
+  /** Let a paused invocation go on: the step that failed is made again. */
+  readonly retryPaused: () => Promise<void>;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -107,6 +111,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
   const told: string[] = [];
   const sent: string[] = [];
   const failSay = { on: false, unsure: false };
+  const failTell = { times: 0 };
   const offered = { agents: [] as AgentOffer[], briefing: [] as string[], prompt: [] as Array<{ id: string; agent?: string; action: string }> };
   const agentsStub = writer("agents", AGENT_TYPES, (api) => {
     api.action(
@@ -115,6 +120,10 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
         effect: "record",
         world: "niwa",
         run: async (input) => {
+          if (failTell.times > 0) {
+            failTell.times -= 1;
+            throw new Error("the inbox is gone");
+          }
           if (input.agent === "rin") told.push(input.text);
           return { turn: `fact-${(told.length + 0xa00000).toString(16)}` };
         },
@@ -184,6 +193,16 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
       return /occasion (occ-[0-9a-f]{10})/.exec(fact ?? "")?.[1] ?? "";
     },
     failSay,
+    failTell,
+    retryPaused: async () => {
+      let paused: string | undefined;
+      await eventually(async () => {
+        const open = await owner.call(requestOpen, {});
+        paused = open.requests.find((one): one is Extract<typeof one, { kind: "paused" }> => "kind" in one && one.kind === "paused")?.invocation;
+        return paused !== undefined;
+      }, 5000, "an invocation to pause");
+      await owner.call("niwa.invocation.resolve" as never, { invocation: paused, choice: "retry" } as never);
+    },
   };
 }
 
@@ -377,6 +396,19 @@ test("an occasion that ends drops what waited about it", async () => {
   expect((await w.owner.call(rinAttention, {})).items).toMatchObject([{ status: "dropped" }]);
 });
 
+test("what was brought up reaches her from the record that says so, also when telling her paused", async () => {
+  const w = await world();
+  await w.lead.call(rinNotice, { key: "task:t-9", kind: "task", text: "The review task is done" });
+  await toldCount(w, 1);
+  await w.rin.call(rinAttend, { subject: { kind: "occasion", occasion: w.lastOccasion() }, decision: "next-contact", text: "The review is done" });
+  w.failTell.times = 1;
+  await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "morning" } });
+  await eventually(async () => (await w.records("rin.attention.brought")).length === 1);
+  await w.retryPaused();
+  await toldCount(w, 2);
+  expect(w.told[1]).toContain("- The review is done");
+});
+
 test("her briefing shows what waits, also to the attach that brought it up", async () => {
   const w = await world();
   await w.lead.call(rinNotice, { key: "task:t-2", kind: "task", text: "The migration task is done" });
@@ -468,6 +500,17 @@ test("repeated corrections ask her for a rule, and the owner's yes puts it in he
   await w.lead.call(rinNotice, { key: "ci:pr-3", kind: "ci", text: "CI is red on draft PR 3" });
   await toldCount(w, 3);
   expect(w.told[2]).toContain(`${proposed.rule} (attention.ci): Red CI on a draft PR is not worth telling`);
+});
+
+test("the ask for a rule reaches her from the record that says one is due, also when telling her paused", async () => {
+  const w = await world();
+  await w.owner.call(rinCorrect, { about: "attention.ci", what: "Do not tell me about CI on drafts" });
+  w.failTell.times = 1;
+  await w.owner.call(rinCorrect, { about: "attention.ci", what: "Draft PRs can be red, leave them" });
+  await eventually(async () => (await w.records("rin.charter.due")).length === 1);
+  await w.retryPaused();
+  await toldCount(w, 1);
+  expect(w.told[0]).toContain("corrections about attention.ci repeat");
 });
 
 test("her prompt section says her charter has no rules before the owner confirms one", async () => {
