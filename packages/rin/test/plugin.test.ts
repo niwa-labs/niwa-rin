@@ -8,8 +8,8 @@ import { NotSent, OptionIdSchema, action, actionRef, grant, principalOf } from "
 import type { Address, Caller, StoredRecord } from "@niwa-labs/core";
 import { AGENT, plugin, pluginName } from "@niwa-labs/plugin";
 import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
-import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify } from "@niwa-labs/agent/records";
-import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten } from "@niwa-labs/memory/records";
+import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify, agentReply, agentTell } from "@niwa-labs/agent/records";
+import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten, memoryConsolidate } from "@niwa-labs/memory/records";
 import { messageSendRef } from "@niwa-labs/messages/records";
 import { ResolverRegistry, requests } from "@niwa-labs/requests";
 import { requestAnswer, requestAsk, requestCancel, requestOpen } from "@niwa-labs/requests/records";
@@ -25,6 +25,7 @@ import {
   rinBriefing,
   rinCharter,
   rinCharterPropose,
+  rinCharterRetire,
   rinPromptCharter,
   rinContext,
   rinConversation,
@@ -32,6 +33,7 @@ import {
   rinDismiss,
   rinInbox,
   rinNotice,
+  rinSelfHistory,
   rinSelfInstall,
 } from "../src/records.ts";
 
@@ -98,6 +100,7 @@ interface World {
   readonly failSay: { on: boolean; unsure: boolean };
   /** How many of the next facts told to her fail: the handler that tells her pauses, as after a crash. */
   readonly failTell: { times: number };
+  readonly consolidated: string[];
   /** Let a paused invocation go on: the step that failed is made again. */
   readonly retryPaused: () => Promise<void>;
 }
@@ -115,10 +118,13 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
   cleanups.push(() => host.close());
   const told: string[] = [];
   const sent: string[] = [];
+  const consolidated: string[] = [];
   const failSay = { on: false, unsure: false };
   const failTell = { times: 0 };
   const offered = { agents: [] as AgentOffer[], briefing: [] as string[], prompt: [] as Array<{ id: string; agent?: string; action: string }> };
   const agentsStub = writer("agents", AGENT_TYPES, (api) => {
+    api.action(action(agentTell, { recovery: "repeat", effect: "record", world: "niwa", run: async () => { throw new Error("agent.tell is not stubbed"); } }));
+    api.action(action(agentReply, { recovery: "repeat", effect: "record", world: "niwa", run: async () => { throw new Error("agent.reply is not stubbed"); } }));
     api.action(
       action(agentNotify, {
         recovery: "repeat",
@@ -142,7 +148,15 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     });
   });
   const workflowStub = realWorkflow ? workflow() : writer("workflow", [RunRequested, RunStarted, RunFinished]);
-  const memoryStub = writer("memory", [NoteWritten, NoteCorrected, NoteRetracted, NoteErased]);
+  const memoryStub = writer("memory", [NoteWritten, NoteCorrected, NoteRetracted, NoteErased], (api) => {
+    api.action(action(memoryConsolidate, {
+      recovery: "repeat", effect: "record", world: "niwa",
+      run: async ({ memory = "stub" }) => {
+        consolidated.push(memory);
+        return { memory, merged: [], lifted: [], dropped: [], retired: [] };
+      },
+    }));
+  });
   const telegram = plugin("telegram", (api) => {
     api.action(
       action("telegram.send", {
@@ -168,7 +182,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     workflowStub,
     memoryStub,
     ...(withTelegram ? [telegram] : []),
-    rinPlugin({ bind, harness: "claude", quietHours: { from: "23:00", to: "08:00" }, ...options }),
+    rinPlugin({ bind, harness: "claude", telegram: withTelegram, quietHours: { from: "23:00", to: "08:00" }, ...options }),
   );
   await host.serve();
   const owner = await connectAsOwner(home.path);
@@ -202,6 +216,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     },
     failSay,
     failTell,
+    consolidated,
     retryPaused: async () => {
       let paused: string | undefined;
       await eventually(async () => {
@@ -242,6 +257,23 @@ test("an occasion reaches her once while it holds, with what she weighs", async 
   expect(w.told).toHaveLength(1);
   const { occasions } = await w.owner.call(rinAttention, {});
   expect(occasions).toMatchObject([{ key: "ci:pr-101", count: 3 }]);
+});
+
+test("concurrent notices share an occasion claim and retry with the claimed text", async () => {
+  const w = await world();
+  w.failTell.times = 1;
+  const input = { key: "ci:same", kind: "ci", text: "The build is red" };
+  const notices = await Promise.all([w.lead.call(rinNotice, input), w.owner.call(rinNotice, input), w.lead.call(rinNotice, input)]);
+  expect(new Set(notices.map(({ occasion }) => occasion)).size).toBe(1);
+  expect(notices.map(({ status }) => status).sort()).toEqual(["opened", "repeated", "repeated"]);
+  await eventually(async () => (await w.records("rin.occasion.claimed")).length === 1);
+  const claim = (await w.records("rin.occasion.claimed"))[0]?.data as { occasion: string; text: string };
+  expect(claim.occasion).toEqual(notices[0]?.occasion);
+  await w.owner.call(rinCharterPropose, { about: "tone", text: "Stay brief" });
+  await w.retryPaused();
+  await toldCount(w, 1);
+  await eventually(async () => (await w.records("rin.occasion.notified")).length === 1);
+  expect(w.told[0]).toBe(claim.text);
 });
 
 test("the stub model's decisions: silence keeps, the next contact waits for his message, now goes out", async () => {
@@ -285,9 +317,10 @@ test("a fact of her inbox, a task's outcome, can be decided about by the id her 
 
 test("the conversation shows what he wrote with where it stands, and what she wrote to him", async () => {
   const w = await world();
-  const first = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "Review the migration" } });
-  const second = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "And the docs" } });
-  const third = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "And the tests" } });
+  const replyTo = { channel: "cockpit", conversation: "rin" } as const;
+  const first = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, replyTo, body: { type: "update", text: "Review the migration" } });
+  const second = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, replyTo, body: { type: "update", text: "And the docs" } });
+  const third = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, replyTo, body: { type: "update", text: "And the tests" } });
   await w.lead.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "not his" } });
   expect((await w.owner.call(rinConversation, {})).messages.map((one) => [one.text, one.from, one.delivery])).toEqual([
     ["Review the migration", "owner", "waiting"],
@@ -296,7 +329,8 @@ test("the conversation shows what he wrote with where it stands, and what she wr
   ]);
   await w.agents("agent.turn.delivered", { agent: "rin", turn: first.id, session: "claude s1", receipt: { status: "started" } });
   await w.agents("agent.turn.failed", { agent: "rin", turn: second.id, status: "unsent", reason: "the harness is gone" });
-  await w.rin.call(messageSendRef, { to: { kind: "owner" }, body: { type: "update", text: "Done: two comments" } });
+  await w.rin.call(messageSendRef, { to: { kind: "owner" }, body: { type: "update", text: "Unrouted outbound message" } });
+  await w.agents("agent.turn.replied", { agent: "rin", turn: first.id, replyTo, text: "Done: two comments" });
   const { messages } = await w.owner.call(rinConversation, {});
   expect(messages.map((one) => [one.id === third.id ? "third" : one.text, one.from, one.delivery])).toEqual([
     ["Review the migration", "owner", "delivered"],
@@ -304,6 +338,9 @@ test("the conversation shows what he wrote with where it stands, and what she wr
     ["third", "owner", "waiting"],
     ["Done: two comments", "rin", undefined],
   ]);
+  expect(messages.at(-1)?.turn).toBe(first.id);
+  expect((await w.owner.call(rinConversation, { conversation: "different" })).messages).toEqual([]);
+  await expect(w.lead.call(rinConversation, {})).rejects.toThrow("Only the owner");
   expect((await w.owner.call(rinConversation, { limit: 2 })).messages.map((one) => one.from)).toEqual(["owner", "rin"]);
 });
 
@@ -341,6 +378,17 @@ test("what she says now in his quiet hours goes out when they end", async () => 
   expect(w.sent).toEqual(["The deploy failed at 23:30"]);
 });
 
+test("Rin consolidates her memory once when the night's quiet period ends", async () => {
+  const midnight = new Date(2026, 10, 21, 0, 0).getTime();
+  const w = await world({}, midnight);
+  expect(w.consolidated).toEqual([]);
+  await w.clock.advance(8 * HOUR);
+  await eventually(() => w.consolidated.length === 1);
+  expect(w.consolidated).toEqual(["rin"]);
+  await w.clock.advance(HOUR);
+  expect(w.consolidated).toEqual(["rin"]);
+});
+
 test("past the safety ceiling, what she says now waits for his next contact", async () => {
   const w = await world({ ceiling: { count: 1, windowMs: 24 * HOUR } });
   for (const key of ["a:1", "a:2"]) await w.lead.call(rinNotice, { key, kind: "agent", text: `Agent ${key} is stuck` });
@@ -368,16 +416,13 @@ test("a decision to tell him now is refused while the host serves no action that
   await w.lead.call(rinNotice, { key: "ci:x", kind: "ci", text: "red" });
   await toldCount(w, 1);
   const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
-  await expect(w.rin.call(rinAttend, { subject, decision: "now", text: "Main is red" })).rejects.toThrow('"telegram.send", which nothing on this host serves');
+  await expect(w.rin.call(rinAttend, { subject, decision: "now", text: "Main is red" })).rejects.toThrow("No channel is configured");
   expect((await w.owner.call(rinAttention, {})).items).toEqual([]);
   expect((await w.rin.call(rinAttend, { subject, decision: "next-contact", text: "Main is red" })).outcome).toBe("held");
 });
 
-test("a custom channel is the action named in the refusal", async () => {
-  const w = await world({ say: "slack.post" }, NOON, undefined, false, false);
-  await w.lead.call(rinNotice, { key: "ci:y", kind: "ci", text: "red" });
-  await toldCount(w, 1);
-  await expect(w.rin.call(rinAttend, { subject: { kind: "occasion", occasion: w.lastOccasion() }, decision: "now", text: "x" })).rejects.toThrow('"slack.post"');
+test("a custom delivery action must be served at startup", async () => {
+  await expect(world({ say: "slack.post" }, NOON, undefined, false, false)).rejects.toThrow('needs the action "slack.post"');
 });
 
 test("what may have reached him is not sent again and does not wait for his next contact", async () => {
@@ -740,15 +785,15 @@ function resolving(choice: string): ResolverRegistry {
   return resolvers;
 }
 
-test("a rule is the owner's only when he answered: a resolver's yes leaves it out of the charter", async () => {
+test("only the owner's answer can settle a proposed rule", async () => {
   const w = await world({}, NOON, resolving("confirm"));
   const proposed = await w.rin.call(rinCharterPropose, { about: "tone", text: "No jokes before ten" });
-  await eventually(async () => (await w.records("rin.charter.declined")).length === 1);
-  expect((await w.records("rin.charter.ruled")).length).toBe(0);
-  expect((await w.records("rin.charter.declined"))[0]?.data).toMatchObject({ rule: proposed.rule, why: "not-his" });
-  expect((await w.owner.call(rinCharter, {})).rules).toMatchObject([{ rule: proposed.rule, status: "declined" }]);
-  await toldCount(w, 1);
-  expect(w.told[0]).toContain("not answered by the owner");
+  const request = await asked(w, 1);
+  expect(await w.records("request.answered")).toEqual([]);
+  expect((await w.owner.call(rinCharter, {})).rules).toMatchObject([{ rule: proposed.rule, status: "proposed" }]);
+  await w.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => (await w.records("rin.charter.ruled")).length === 1);
+  expect((await w.owner.call(rinCharter, {})).rules).toMatchObject([{ rule: proposed.rule, status: "ruled" }]);
 });
 
 /** A module that exports a plugin of Rin's group, written to a file of the host's home. */
@@ -768,7 +813,7 @@ async function asked(w: World, count: number): Promise<{ id: string; input: { ti
 }
 
 test("she installs a plugin of her own group only after the owner said yes to that file", async () => {
-  const w = await world({ selfEdit: true });
+  const w = await world({ selfEdit: "ask" });
   const module = await moduleOf(w, "rin/extra", "v1");
   const proposed = await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "to keep a diary" });
   const request = await asked(w, 1);
@@ -787,7 +832,7 @@ test("she installs a plugin of her own group only after the owner said yes to th
 });
 
 test("a plugin the owner declines is not installed, and a file changed after he looked is refused", async () => {
-  const w = await world({ selfEdit: true });
+  const w = await world({ selfEdit: "ask" });
   const module = await moduleOf(w, "rin/extra", "v1");
   await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
   await w.owner.call(requestAnswer, { id: (await asked(w, 1)).id, answer: { ids: ["decline"] } });
@@ -805,17 +850,56 @@ test("a plugin the owner declines is not installed, and a file changed after he 
   expect(w.host.installed(pluginName("rin/extra"))).toBeUndefined();
 });
 
-test("a resolver's yes does not install a plugin", async () => {
-  const w = await world({ selfEdit: true }, NOON, resolving("confirm"));
+test("self-edit questions wait for the owner even if a resolver would approve", async () => {
+  const w = await world({ selfEdit: "ask" }, NOON, resolving("confirm"));
   const module = await moduleOf(w, "rin/extra", "v1");
   await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
-  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 1);
-  expect((await w.records("rin.self-edit.settled"))[0]?.data).toMatchObject({ outcome: "not-his" });
+  const request = await asked(w, 1);
+  expect((await w.owner.call(requestOpen, {})).requests.some((one) => "id" in one && one.id === request.id)).toBe(true);
+  expect(await w.records("request.answered")).toEqual([]);
   expect(w.host.installed(pluginName("rin/extra"))).toBeUndefined();
+  await w.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => w.host.installed(pluginName("rin/extra")) !== undefined);
+});
+
+test("free mode records the claim and outcome without a request, and the owner can uninstall", async () => {
+  const w = await world({ selfEdit: "free" });
+  const module = await moduleOf(w, "rin/extra", "v1");
+  const proposed = await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
+  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 1);
+  expect(await w.records("request.created")).toEqual([]);
+  expect((await w.records("rin.self-edit.claimed")).map((row) => row.data)).toEqual([{ ...proposed, plugin: "rin/extra" }]);
+  expect(await w.owner.call(rinSelfHistory, {})).toMatchObject({
+    mode: "free",
+    edits: [{ ...proposed, plugin: "rin/extra", status: "installed" }],
+    installed: [{ plugin: "rin/extra", version: "v1", hash: proposed.hash }],
+  });
+  await w.owner.call(actionRef("plugin.uninstall", {
+    description: "Uninstall selected module.",
+    input: z.object({ plugin: z.string(), hash: z.string() }),
+    output: z.object({ plugin: z.string(), hash: z.string() }),
+  }), { plugin: "rin/extra", hash: proposed.hash });
+  expect((await w.owner.call(rinSelfHistory, {})).installed).toEqual([]);
+});
+
+test("simultaneous charter proposals admit one rule, and a late approval cannot revive a retired rule", async () => {
+  const w = await world();
+  const outcomes = await Promise.allSettled([
+    w.rin.call(rinCharterPropose, { about: "tone", text: "Shorter replies" }),
+    w.rin.call(rinCharterPropose, { about: "tone", text: "More detail" }),
+  ]);
+  expect(outcomes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  const winner = outcomes.find((result) => result.status === "fulfilled");
+  if (winner === undefined) throw new Error("a proposal must win");
+  const request = await asked(w, 1);
+  await w.owner.call(rinCharterRetire, { rule: winner.value.rule });
+  await w.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => (await w.records("niwa.record.refused")).some(({ data }) => (data as { code?: unknown })?.code === "rule-closed"));
+  expect((await w.owner.call(rinCharter, {})).rules).toMatchObject([{ rule: winner.value.rule, status: "retired" }]);
 });
 
 test("only Rin proposes to change herself, only when the owner turned it on, and only a plugin of her group", async () => {
-  const on = await world({ selfEdit: true });
+  const on = await world({ selfEdit: "ask" });
   const module = await moduleOf(on, "rin/extra", "v1");
   await expect(on.lead.call(rinSelfInstall, { plugin: "rin/extra", module, why: "x" })).rejects.toThrow("only Rin");
   await expect(on.owner.call(rinSelfInstall, { plugin: "rin/extra", module, why: "x" })).rejects.toThrow("only Rin");

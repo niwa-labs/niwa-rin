@@ -64,10 +64,10 @@ describe("the charter", () => {
         proposal("rule-0000000001", "CI on drafts waits for the morning"),
         proposal("rule-0000000002", "Never mention CI"),
         proposal("rule-0000000003", "Say a red main branch at once"),
-        ["rin.charter.ruled", { rule: "rule-0000000001", by: owner }],
-        ["rin.charter.declined", { rule: "rule-0000000002", why: "declined" }],
-        ["rin.charter.ruled", { rule: "rule-0000000003", by: owner }],
-        ["rin.charter.retired", { rule: "rule-0000000003" }],
+        ["rin.charter.ruled", { rule: "rule-0000000001", about: "attention.ci", by: owner }],
+        ["rin.charter.declined", { rule: "rule-0000000002", about: "attention.ci", why: "declined" }],
+        ["rin.charter.ruled", { rule: "rule-0000000003", about: "attention.ci", by: owner }],
+        ["rin.charter.retired", { rule: "rule-0000000003", about: "attention.ci" }],
       ),
     );
     expect(ruledRules(state).map((rule) => rule.rule)).toEqual(["rule-0000000001"]);

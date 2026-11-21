@@ -10,6 +10,8 @@ import { z } from "zod";
 import { Address, actionRef, record } from "@niwa-labs/core";
 import { AgentName, PromptSectionInput, PromptSectionOutput, TurnAuthor, TurnId } from "@niwa-labs/agent/records";
 
+import { charterGuard, correctionStatus, editGuard, hasProposal, occasionGuard, ruleStatus } from "./admission.ts";
+
 /** An occasion: something that happened and may matter to the owner, kept as one while it holds. */
 export const OccasionId = z.string().regex(/^occ-[0-9a-f]{10}$/);
 export type OccasionId = z.output<typeof OccasionId>;
@@ -81,17 +83,71 @@ const Text = z.string().min(1).max(2000);
 
 // ---- attention ------------------------------------------------------------------------------------------------
 
+const OccasionRevision = z.object({ occasion: OccasionId, key: OccasionKey });
+const Notice = z.object({ key: OccasionKey, notice: z.string() });
+const ActiveOccasion = OccasionRevision.extend({ notice: z.string(), text: Text, from: TurnAuthor });
+
+const openChanged = { code: "occasion-changed", reason: "The open occasion changed" };
 /** Something happened that may matter to the owner: a new occasion. */
 export const OccasionOpened = record(
   "rin.occasion.opened",
-  z.object({ occasion: OccasionId, key: OccasionKey, kind: OccasionKind, text: Text, from: TurnAuthor }),
+  ActiveOccasion.extend({ kind: OccasionKind }),
+  occasionGuard(
+    (state) => state.open === null ? undefined : openChanged,
+    (state, data) => ({ ...state, open: data.occasion }),
+  ),
 );
 
-/** The same thing happened again while its occasion holds: counted on it, and not brought to her again. */
-export const OccasionRepeated = record("rin.occasion.repeated", z.object({ occasion: OccasionId, text: Text, from: TurnAuthor }));
+/** The same thing happened again while its occasion holds. */
+export const OccasionRepeated = record(
+  "rin.occasion.repeated",
+  ActiveOccasion,
+  occasionGuard(
+    (state, data) => state.open === data.occasion ? undefined : openChanged,
+    (state) => state,
+  ),
+);
 
-/** An occasion no longer holds: the build is green again, the agent answers again. What waits about it is dropped. */
-export const OccasionEnded = record("rin.occasion.ended", z.object({ occasion: OccasionId, text: Text.optional(), from: TurnAuthor }));
+/** An occasion no longer holds. What waits about it is dropped. */
+export const OccasionEnded = record(
+  "rin.occasion.ended",
+  ActiveOccasion.partial({ text: true }),
+  occasionGuard(
+    (state, data) => state.open === data.occasion ? undefined : openChanged,
+    (state) => ({ ...state, open: null }),
+  ),
+);
+
+/** An end notice reached an occasion key with no open occasion. */
+export const OccasionIgnored = record(
+  "rin.occasion.ignored",
+  Notice,
+  occasionGuard(
+    (state) => state.open === null ? undefined : openChanged,
+    (state) => state,
+  ),
+);
+
+/** Claim delivery of the fact for this occasion before calling the agent. */
+export const OccasionClaimed = record(
+  "rin.occasion.claimed",
+  OccasionRevision.extend({ text: z.string() }),
+  occasionGuard(
+    (state, data) => state.open !== data.occasion ? openChanged : state.notifications.has(data.occasion)
+      ? { code: "occasion-already-claimed", reason: "Delivery of this occasion was already claimed" } : undefined,
+    (state, data) => ({ ...state, notifications: new Map(state.notifications).set(data.occasion, "claimed") }),
+  ),
+);
+
+export const OccasionNotified = record(
+  "rin.occasion.notified",
+  OccasionRevision,
+  occasionGuard(
+    (state, data) => state.notifications.get(data.occasion) === "claimed"
+      ? undefined : { code: "occasion-unclaimed", reason: "There is no outstanding delivery claim for this occasion" },
+    (state, data) => ({ ...state, notifications: new Map(state.notifications).set(data.occasion, "notified") }),
+  ),
+);
 
 /** Rin decided what to do about something, with what she would tell him and the rule she insists by. */
 export const AttentionDecided = record(
@@ -161,28 +217,54 @@ export const Corrected = record(
      */
     note: NoteChange.optional(),
   }),
+  charterGuard(
+    (state, data) => state.corrections.has(data.correction) ? { code: "correction-known", reason: "This correction already exists" } : undefined,
+    (state, data) => ({ ...state, corrections: new Map(state.corrections).set(data.correction, "new") }),
+  ),
 );
 
 /** Corrections about one thing repeat: Rin is asked whether a rule of her charter should cover them. */
-export const CharterDue = record("rin.charter.due", z.object({ about: Topic, corrections: z.array(CorrectionId).min(1) }));
+export const CharterDue = record(
+  "rin.charter.due",
+  z.object({ about: Topic, corrections: z.array(CorrectionId).min(1) }),
+  charterGuard(
+    (state, data) => hasProposal(state) || data.corrections.some((id) => state.corrections.get(id) !== "new")
+      ? { code: "corrections-changed", reason: "These corrections can no longer make a rule due" } : undefined,
+    (state, data) => correctionStatus(state, data.corrections, "asked"),
+  ),
+);
 
 /** A rule of the charter was proposed to the owner, with the corrections it covers. */
 export const CharterProposed = record(
   "rin.charter.proposed",
   z.object({ rule: RuleId, about: Topic, text: Text, corrections: z.array(CorrectionId), by: TurnAuthor }),
+  charterGuard(
+    (state, data) => {
+      if (state.rules.has(data.rule)) return { code: "rule-known", reason: "This rule already exists" };
+      if (data.by.kind === "agent" && hasProposal(state)) return { code: "open-proposal", reason: `A rule about ${data.about} already waits for the owner's word` };
+      if (data.corrections.some((id) => !state.corrections.has(id) || state.corrections.get(id) === "covered")) {
+        return { code: "corrections-changed", reason: "Only uncovered corrections about this topic can be attached" };
+      }
+    },
+    (state, data) => ({
+      ...correctionStatus(state, data.corrections, "covered"),
+      rules: new Map(state.rules).set(data.rule, "proposed"),
+    }),
+  ),
 );
 
 /** The owner confirmed a rule: it is part of the charter from now on. */
-export const CharterRuled = record("rin.charter.ruled", z.object({ rule: RuleId, by: Address }));
+export const CharterRuled = record("rin.charter.ruled", z.object({ rule: RuleId, about: Topic, by: Address }), ruleStatus("ruled"));
 
 /** A proposed rule did not become part of the charter: the owner said no, the question was dropped, or something else than he answered it. */
 export const CharterDeclined = record(
   "rin.charter.declined",
-  z.object({ rule: RuleId, why: z.enum(["declined", "cancelled", "expired", "not-his"]) }),
+  z.object({ rule: RuleId, about: Topic, why: z.enum(["declined", "cancelled", "expired", "not-his"]) }),
+  ruleStatus("declined"),
 );
 
 /** The owner took a rule out of the charter. */
-export const CharterRetired = record("rin.charter.retired", z.object({ rule: RuleId, reason: z.string().min(1).optional() }));
+export const CharterRetired = record("rin.charter.retired", z.object({ rule: RuleId, about: Topic, reason: z.string().min(1).optional() }), ruleStatus("retired"));
 
 // ---- changing herself -----------------------------------------------------------------------------------------
 
@@ -190,15 +272,37 @@ export const CharterRetired = record("rin.charter.retired", z.object({ rule: Rul
  * Rin asked to install a plugin of her own group: the module, and the hash of the file as it was when she asked.
  * The install is pinned to that hash, so what the owner approves is the file that is installed.
  */
+export const SelfEditMode = z.enum(["off", "ask", "free"]);
+export type SelfEditMode = z.output<typeof SelfEditMode>;
+const Hash = z.string().regex(/^[a-f0-9]{64}$/);
+const RinModule = z.string().regex(/^rin(?:\/[a-z][a-z0-9-]*)+$/);
+const EditProposal = z.object({ edit: EditId, plugin: RinModule, module: z.string().min(1), hash: Hash, why: Text, mode: z.enum(["ask", "free"]) });
+const EditOutcome = z.enum(["installed", "declined", "cancelled", "expired", "not-his", "failed", "unknown"]);
+
 export const SelfEditProposed = record(
   "rin.self-edit.proposed",
-  z.object({ edit: EditId, plugin: z.string().min(1), module: z.string().min(1), hash: z.string().min(1), why: Text }),
+  EditProposal,
+);
+
+/** The approved installation now owns the right to try the effect for this plugin. */
+export const SelfEditClaimed = record(
+  "rin.self-edit.claimed",
+  z.object({ plugin: z.string(), edit: EditId, hash: Hash }),
+  editGuard(
+    (current) => current === null ? undefined : { code: "edit-in-progress", reason: "An installation is already in progress" },
+    (_current, data) => data.edit,
+  ),
 );
 
 /** How a change of herself ended: installed, or why it was not. */
 export const SelfEditSettled = record(
   "rin.self-edit.settled",
-  z.object({ edit: EditId, outcome: z.enum(["installed", "declined", "cancelled", "expired", "not-his", "failed"]), detail: z.string().optional() }),
+  z.object({ edit: EditId, plugin: z.string(), outcome: EditOutcome, detail: z.string().optional() }),
+  editGuard(
+    (current, data) => current === data.edit || (current === null && data.outcome !== "installed" && data.outcome !== "unknown")
+      ? undefined : { code: "edit-unclaimed", reason: "This installation holds no claim" },
+    (current, data) => current === data.edit ? null : current,
+  ),
 );
 
 /** The record types Rin declares. */
@@ -206,6 +310,9 @@ export const RIN_TYPES = [
   OccasionOpened,
   OccasionRepeated,
   OccasionEnded,
+  OccasionIgnored,
+  OccasionClaimed,
+  OccasionNotified,
   AttentionDecided,
   AttentionHeld,
   AttentionSending,
@@ -221,6 +328,7 @@ export const RIN_TYPES = [
   CharterDeclined,
   CharterRetired,
   SelfEditProposed,
+  SelfEditClaimed,
   SelfEditSettled,
 ] as const;
 
@@ -358,7 +466,7 @@ export const rinCharter = actionRef("rin.charter", {
 
 export const rinSelfInstall = actionRef("rin.self.install", {
   description:
-    "Asks the owner to let Rin install a plugin of her own group (a name that begins with `rin/`) from a module file that exports it as its default. Say what the plugin does and why in `why`. The owner is asked every time, and is shown the file's hash: only that file is installed, and only if he says yes. The answer comes back to her as a fact.",
+    "Proposes installing a plugin of Rin’s group (rin/*) from a module file. Say what the plugin does and why. The host’s selfEdit setting controls whether the owner must approve the specific file hash.",
   input: z.object({ plugin: z.string().min(1), module: z.string().min(1), why: Text }),
   output: z.object({ edit: EditId, hash: z.string() }),
 });
@@ -369,6 +477,16 @@ export const pluginInstall = actionRef("plugin.install", {
   input: z.object({ plugin: z.string().min(1), module: z.string().min(1), hash: z.string().min(1).optional() }),
   output: z.object({ plugin: z.string(), version: z.string(), hash: z.string() }),
   target: (input) => input.plugin,
+});
+
+export const rinSelfHistory = actionRef("rin.self.history", {
+  description: "Rin's proposed and completed module installations and their current status.",
+  input: z.object({}),
+  output: z.object({
+    mode: SelfEditMode,
+    edits: z.array(EditProposal.extend({ at: z.number(), status: z.union([EditOutcome, z.enum(["pending", "installing"])]), detail: z.string().optional() })),
+    installed: z.array(z.object({ plugin: z.string(), hash: Hash, version: z.string() })),
+  }),
 });
 
 export const rinInbox = actionRef("rin.inbox", {
@@ -396,11 +514,12 @@ export type Delivery = z.output<typeof Delivery>;
 export const rinConversation = actionRef("rin.conversation", {
   description:
     "The conversation between the owner and Rin, oldest first, the last of it: what he wrote to her, with where each message stands (waiting in her inbox, delivered to her session, not delivered), and what she wrote to him.",
-  input: z.object({ limit: z.number().int().positive().max(200).default(50) }),
+  input: z.object({ conversation: z.string().min(1).default("rin"), limit: z.number().int().positive().max(200).default(50) }),
   output: z.object({
     messages: z.array(
       z.object({
         id: z.string(),
+        turn: TurnId.optional(),
         from: z.enum(["owner", "rin"]),
         text: z.string(),
         at: z.number(),

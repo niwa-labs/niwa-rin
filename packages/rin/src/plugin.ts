@@ -5,8 +5,8 @@
  * Rin. Something that happened reaches her as an occasion (`rin.notice`, and the occasions she follows herself:
  * a stuck agent, a run she started that finished); she decides in her main session what to do about it
  * (`rin.attend`), and the plugin carries the decision out: it holds what waits for the owner's next contact or
- * for the end of his quiet hours, tells him now through the action of the composition (`telegram.send` by
- * default), and brings up what waits when he writes to her or attaches a session.
+ * for the end of his quiet hours, tells him now through the configured delivery action, and brings up
+ * what waits when he writes to her or attaches a session.
  *
  * His corrections are written down (`rin.corrected`), whether he says them, she writes them from his words, or he
  * acts them out: changes a note of hers, cancels what she promised or decided, turns down or leaves unanswered
@@ -22,18 +22,18 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { OptionIdSchema, action, actionName, agent as agentAddress, owner, recordId, seq } from "@niwa-labs/core";
+import { CORE_TYPES, OptionIdSchema, RecordRefused, action, actionName, agent as agentAddress, owner, recordId, seq } from "@niwa-labs/core";
 import type { Address, Caller, JournalReader, RecordType, Step, StoredRecord } from "@niwa-labs/core";
 import { AGENT, COCKPIT_MODULE, plugin, trigger } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi } from "@niwa-labs/plugin";
-import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AgentAttached, AgentTurnDelivered, AgentTurnFailed, AgentTurnQueued, agentNotify } from "@niwa-labs/agent/records";
+import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AgentAttached, AgentTurnDelivered, AgentTurnFailed, AgentTurnQueued, AgentTurnReplied, agentNotify, agentReply, agentTell } from "@niwa-labs/agent/records";
 import type { TurnAuthor } from "@niwa-labs/agent/records";
 import { CommitmentCancelled, CommitmentMade } from "@niwa-labs/commitments/records";
 import { DecisionMade, DecisionRevoked } from "@niwa-labs/delegate/records";
-import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten } from "@niwa-labs/memory/records";
+import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten, memoryConsolidate } from "@niwa-labs/memory/records";
 import { Message as MessageEnvelope, MessageReceived, MessageSent, contentText } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
-import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
+import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, operatorAnswered, question, requestAsk } from "@niwa-labs/requests/records";
 import { timer } from "@niwa-labs/timer";
 import { RunFinished, RunRequested } from "@niwa-labs/workflow/records";
 
@@ -77,10 +77,15 @@ import {
   CharterRetired,
   CharterRuled,
   Corrected,
+  OccasionClaimed,
   OccasionEnded,
+  OccasionIgnored,
+  OccasionNotified,
   OccasionOpened,
   OccasionRepeated,
   RIN_TYPES,
+  SelfEditClaimed,
+  SelfEditMode,
   SelfEditProposed,
   SelfEditSettled,
   pluginInstall,
@@ -97,6 +102,7 @@ import {
   rinInbox,
   rinNotice,
   rinPromptCharter,
+  rinSelfHistory,
   rinSelfInstall,
 } from "./records.ts";
 import type { Contact, Delivery, NoteChange, OccasionId, Subject, Topic } from "./records.ts";
@@ -111,15 +117,17 @@ export interface RinOptions {
   /** The harness installation her sessions run on, or the role the composition maps to one: exactly one. */
   readonly harness?: string;
   readonly role?: string;
-  /** Whether she may change herself by writing a plugin of her group and installing it; the owner is asked every time. */
-  readonly selfEdit?: boolean;
+  /** Policy for module installs proposed by Rin. Default: off. */
+  readonly selfEdit?: SelfEditMode;
   /** The core of her character; the one of this package unless the owner gives his own. */
   readonly core?: Core;
   /** The owner's quiet hours, local time. Default 23:00 to 08:00. */
   readonly quietHours?: QuietHours;
   /** The safety ceiling on what she says now. Default: twelve in any 24 hours. */
   readonly ceiling?: Ceiling;
-  /** The action that tells the owner something now, given `{ text }`. Default: `telegram.send`. */
+  /** Enable Telegram delivery and require telegram.send at host startup. */
+  readonly telegram?: boolean;
+  /** Action for proactive messages, given `{ text }`. Uses Telegram when enabled. */
   readonly say?: string;
   /** How many corrections about one thing, not covered by a rule, ask her for one. Default: two. */
   readonly ruleAfter?: number;
@@ -177,21 +185,32 @@ const OwnerWroteInToRin = trigger(MessageReceived, { name: "message.received:own
 
 /** The Rin plugin. Install it after the agents module, which serves her, and with the plugins whose records she follows. */
 export function rinPlugin(options: RinOptions): Plugin {
+  const selfEdit = SelfEditMode.parse(options.selfEdit ?? "off");
   const definition = rinDefinition({
     ...(options.harness === undefined ? {} : { harness: options.harness }),
     ...(options.role === undefined ? {} : { role: options.role }),
-    ...(options.selfEdit === undefined ? {} : { selfEdit: options.selfEdit }),
+    selfEdit,
     ...(options.core === undefined ? {} : { core: options.core }),
   });
   const quiet = options.quietHours ?? DEFAULT_QUIET;
   const ceiling = options.ceiling ?? DEFAULT_CEILING;
-  const say = actionName(options.say ?? "telegram.send");
+  const sendAction = options.say ?? (options.telegram ? "telegram.send" : undefined);
+  const say = sendAction === undefined ? undefined : actionName(sendAction);
   const ruleAfter = options.ruleAfter ?? DEFAULT_RULE_AFTER;
   const bind = options.bind;
   const quietEnd = timer.daily(quiet.to, { id: "rin-quiet-end", description: "The end of the owner's quiet hours" });
 
   return plugin("rin", (api: PluginApi) => {
     api.declare(...RIN_TYPES);
+    api.needs({
+      actions: [
+        agentNotify, agentTell, agentReply, requestAsk, memoryConsolidate,
+        ...(say === undefined ? [] : [say]),
+        ...(options.telegram ? ["telegram.send"] : []),
+        ...(selfEdit === "off" ? [] : [pluginInstall]),
+      ],
+      types: [AgentTurnReplied],
+    });
     api.offer(AGENT, definition);
     api.offer(AGENT_BRIEFING, { title: "What Rin holds for you", action: rinBriefing.name });
     // Her charter is part of the prompt of her sessions, read when each one starts: a rule confirmed since reaches the next.
@@ -212,9 +231,9 @@ export function rinPlugin(options: RinOptions): Plugin {
      */
     const askOwner = async (step: Step, asking: ReturnType<typeof confirmQuestion>, key: string): Promise<Verdict> => {
       try {
-        const { id, answer } = answeredBy(await step(requestAsk, { to: owner, ...asking }, { key }));
+        const { id, answer } = answeredBy(await step(requestAsk, { to: owner, answerPolicy: "owner-only", ...asking }, { key }));
         const answers = journal()?.find({ type: RequestAnswered.name, field: "id", equals: id }) ?? [];
-        if (!answers.some((stored) => (stored.data as { by?: { kind?: unknown } }).by?.kind === "owner")) return "not-his";
+        if (!answers.some((stored) => operatorAnswered(stored, bind))) return "not-his";
         return "ids" in answer && answer.ids[0] === CONFIRM ? "confirmed" : "declined";
       } catch (error) {
         if (error instanceof RequestCancelled) return "cancelled";
@@ -223,16 +242,9 @@ export function rinPlugin(options: RinOptions): Plugin {
       }
     };
 
-    /** Does the host serve the action that tells the owner something now? */
-    const sayServed = (): boolean => api.effectOf(String(say)) !== undefined;
-    const sayMissing = (): string => `plugin "rin" tells the owner something now with the action "${String(say)}", which nothing on this host serves: install the plugin that serves it, or name another action in \`say\``;
-
-    // The clock of the host, once it serves: what a read that has no record of its own tells the time by.
+    // The clock of the host, once it serves.
     let clock: (() => number) | undefined;
     api.service((ctx) => {
-      // A plugin cannot make the host refuse to serve for an action it lacks, so say so at start; a decision to tell
-      // him now is refused while nothing serves the action (`unreachable`).
-      if (!sayServed()) console.error(`niwa: ${sayMissing()}`);
       clock = () => ctx.now();
       return () => {
         clock = undefined;
@@ -275,9 +287,8 @@ export function rinPlugin(options: RinOptions): Plugin {
       return lines.join("\n");
     };
 
-    // What reads her attention and writes on it runs one at a time: two notices of one key that arrive at once are
-    // one occasion and a repeat, and two decisions to say one thing now are one said and one refused. The host is the
-    // journal's one writer, so this process is the only place they can meet.
+    // Serialize attention routing for the shared ceiling and for items brought at owner contact.
+    // Occasion and charter transitions are admitted by the journal.
     let tail: Promise<unknown> = Promise.resolve();
     const serially = <T>(work: () => Promise<T>): Promise<T> => {
       const run = tail.then(work, work);
@@ -287,33 +298,43 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // ---- occasions -----------------------------------------------------------------------------------------
 
-    /** Write a notice: open an occasion, count a repeat, or end one and drop what waits about it. */
-    const notice = (
-      emit: <T>(type: RecordType<T>, data: T) => Promise<StoredRecord>,
+    /** Write a notice against the open occurrence of its key. On replay it keeps its first outcome. */
+    const notice = async (
+      emit: <T>(type: RecordType<T>, data: T, key: string) => Promise<StoredRecord>,
       input: { key: string; kind: string; text: string; ends?: boolean },
       from: TurnAuthor,
       seed: string,
-    ): Promise<{ occasion?: OccasionId; status: "opened" | "repeated" | "ended" | "none" }> =>
-      serially(async () => {
-        const state = attention();
-        const found = noticeOf(state, input);
-        switch (found.kind) {
-          case "open": {
-            const occasion = idOf("occ", seed);
-            await emit(OccasionOpened, { occasion, key: input.key, kind: input.kind, text: input.text, from });
-            return { occasion, status: "opened" };
-          }
-          case "repeat":
-            await emit(OccasionRepeated, { occasion: found.occasion, text: input.text, from });
-            return { occasion: found.occasion, status: "repeated" };
-          case "end":
-            // The end record alone drops what waited about the occasion: nothing is left to finish after a restart.
-            await emit(OccasionEnded, { occasion: found.occasion, text: input.text, from });
-            return { occasion: found.occasion, status: "ended" };
-          case "none":
-            return { status: "none" };
+    ): Promise<{ occasion?: OccasionId; status: "opened" | "repeated" | "ended" | "none" }> => {
+      const committed = [
+        [OccasionOpened, "opened"], [OccasionRepeated, "repeated"],
+        [OccasionEnded, "ended"], [OccasionIgnored, "none"],
+      ] as const;
+      for (const [type, status] of committed) {
+        const row = journal()?.find({ type: type.name, field: "notice", equals: seed })[0];
+        if (row === undefined) continue;
+        const data = type.schema.parse(row.data);
+        return { status, ...("occasion" in data && typeof data.occasion === "string" ? { occasion: data.occasion } : {}) };
+      }
+
+      const found = noticeOf(attention(), input);
+      const data = { key: input.key, notice: seed, text: input.text, from };
+      switch (found.kind) {
+        case "open": {
+          const occasion = idOf("occ", seed);
+          await emit(OccasionOpened, { ...data, occasion, kind: input.kind }, `open-${occasion}`);
+          return { occasion, status: "opened" };
         }
-      });
+        case "repeat":
+          await emit(OccasionRepeated, { ...data, occasion: found.occasion }, `repeat-${found.occasion}`);
+          return { occasion: found.occasion, status: "repeated" };
+        case "end":
+          await emit(OccasionEnded, { ...data, occasion: found.occasion }, `end-${found.occasion}`);
+          return { occasion: found.occasion, status: "ended" };
+        case "none":
+          await emit(OccasionIgnored, { key: input.key, notice: seed }, "ignore");
+          return { status: "none" };
+      }
+    };
 
     api.action(
       action(rinNotice, {
@@ -327,27 +348,36 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // A new occasion reaches her inbox as a fact, with what she weighs before she decides. The plugin tells her,
     // not whoever noticed it: telling an agent is no right of theirs.
-    api.on(OccasionOpened, async (data, step, stored) => {
-      const text = [
+    api.on(OccasionOpened, { concurrency: { by: (data) => data.key } }, async (data, step, stored) => {
+      const occurrence = { key: data.key, occasion: data.occasion };
+      const previous = journal()?.find({ type: OccasionClaimed.name, field: "occasion", equals: data.occasion })[0];
+      const text = previous === undefined ? [
         `Something happened (occasion ${data.occasion}, ${data.kind}): ${data.text}`,
         "",
         contextText(stored.at),
         "",
         `Decide with rin.attend on { kind: "occasion", occasion: "${data.occasion}" }.`,
-      ].join("\n");
-      await step(agentNotify, { agent: RIN_AGENT, text });
+      ].join("\n") : OccasionClaimed.schema.parse(previous.data).text;
+      try {
+        await step.emit(OccasionClaimed, { ...occurrence, text }, { key: "claim" });
+      } catch (error) {
+        if (error instanceof RecordRefused && (error.code === "occasion-changed" || error.code === "occasion-already-claimed")) return;
+        throw error;
+      }
+      await step(agentNotify, { agent: RIN_AGENT, text }, { key: "notify" });
+      await step.emit(OccasionNotified, occurrence, { key: "notified" });
     });
 
     // An agent she leads that cannot be reached is an occasion; it ends when a turn reaches it again.
     api.on(AgentTurnFailed, { id: "stuck-agent" }, async (data, step, stored) => {
       if (data.agent === RIN_AGENT) return;
       const text = `A turn did not reach agent ${data.agent} (${data.status}): ${firstLine(data.reason)}`;
-      await notice((type, value) => step.emit(type, value), { key: `agent:${data.agent}:unreachable`, kind: "agent", text }, { kind: "niwa", by: "agents" }, String(stored.id));
+      await notice((type, value, key) => step.emit(type, value, { key }), { key: `agent:${data.agent}:unreachable`, kind: "agent", text }, { kind: "niwa", by: "agents" }, String(stored.id));
     });
     api.on(AgentTurnDelivered, { id: "agent-reachable" }, async (data, step, stored) => {
-      if (data.agent === RIN_AGENT || attention().open.get(`agent:${data.agent}:unreachable`) === undefined) return;
+      if (data.agent === RIN_AGENT) return;
       const text = `A turn reached agent ${data.agent} again.`;
-      await notice((type, value) => step.emit(type, value), { key: `agent:${data.agent}:unreachable`, kind: "agent", text, ends: true }, { kind: "niwa", by: "agents" }, String(stored.id));
+      await notice((type, value, key) => step.emit(type, value, { key }), { key: `agent:${data.agent}:unreachable`, kind: "agent", text, ends: true }, { kind: "niwa", by: "agents" }, String(stored.id));
     });
 
     // A workflow run she started that finished is an occasion: she learns its outcome without asking. Who started it
@@ -360,7 +390,7 @@ export function rinPlugin(options: RinOptions): Plugin {
       const label = asked.data.label ?? asked.data.file;
       const how = data.outcome.status === "failed" ? `failed: ${firstLine(data.outcome.error.message)}` : data.outcome.status;
       const text = `The workflow run ${data.run}${label === "" ? "" : ` (${label})`} you started ended: ${how}.`;
-      await notice((type, value) => step.emit(type, value), { key: `run:${data.run}`, kind: "workflow", text }, { kind: "niwa", by: "workflow" }, String(stored.id));
+      await notice((type, value, key) => step.emit(type, value, { key }), { key: `run:${data.run}`, kind: "workflow", text }, { kind: "niwa", by: "workflow" }, String(stored.id));
     });
 
     // ---- her decisions --------------------------------------------------------------------------------------
@@ -390,7 +420,7 @@ export function rinPlugin(options: RinOptions): Plugin {
             if (!known(input.subject, state)) throw new RinRefusal("unknown", "there is no such occasion that holds, or turn of hers");
             const telling = input.decision === "next-contact" || input.decision === "now" || input.decision === "insist";
             if (telling && input.text === undefined) throw new RinRefusal("no-text", `"${input.decision}" needs the text the owner is to read`);
-            if ((input.decision === "now" || input.decision === "insist") && !sayServed()) throw new RinRefusal("unreachable", `${sayMissing()}; hold it for his next contact instead`);
+            if ((input.decision === "now" || input.decision === "insist") && say === undefined) throw new RinRefusal("unreachable", "No channel is configured for proactive messages; hold it for the owner’s next contact");
             if (input.decision === "now" || input.decision === "next-contact") {
               const refused = repeatRefusal(state, input.subject);
               if (refused !== undefined) throw new RinRefusal("already-said", refused);
@@ -423,6 +453,10 @@ export function rinPlugin(options: RinOptions): Plugin {
     // What she says now goes out through the action of the composition, called by this plugin. What cannot reach
     // the owner waits for his next contact, and she is told.
     api.on(AttentionSending, { id: "say" }, async (data, step) => {
+      if (say === undefined) {
+        await step.emit(AttentionHeld, { ...data, until: "contact", why: "undelivered" }, { key: "hold" });
+        return;
+      }
       const sent = await step.outcome<{ text: string }, unknown>(say, { text: data.text }, { key: "say" });
       const rule = data.rule === undefined ? {} : { rule: data.rule };
       if (sent.status === "completed") {
@@ -454,7 +488,7 @@ export function rinPlugin(options: RinOptions): Plugin {
         const state = attention();
         const said = [...state.said];
         for (const item of heldItems(state, "quiet-end")) {
-          const route = sayNow({ at: stored.at, quiet, ceiling, said });
+          const route = say === undefined ? { kind: "hold", why: "undelivered" } as const : sayNow({ at: stored.at, quiet, ceiling, said });
           const rule = item.rule === undefined ? {} : { rule: item.rule };
           if (route.kind === "say") {
             said.push(stored.at);
@@ -465,6 +499,11 @@ export function rinPlugin(options: RinOptions): Plugin {
         }
       }),
     );
+
+    // Rin's nightly quiet period ends at this firing. The durable step makes one consolidation per firing.
+    api.on(quietEnd, { id: "wake-memory" }, async (_firing, step) => {
+      await step(memoryConsolidate, { memory: RIN_AGENT }, { key: "consolidate" });
+    });
 
     // ---- the owner in touch ---------------------------------------------------------------------------------
 
@@ -525,23 +564,35 @@ export function rinPlugin(options: RinOptions): Plugin {
         recovery: "repeat",
         effect: "read",
         world: "niwa",
-        run: async (input) => {
-          const delivery = (turn: string): Delivery => {
-            const at = (type: RecordType<unknown>) => journal()?.find({ type: type.name, field: "turn", equals: turn }).filter((stored) => (stored.data as { agent?: unknown }).agent === RIN_AGENT) ?? [];
-            if (at(AgentTurnDelivered).length > 0) return "delivered";
-            const failed = at(AgentTurnFailed).at(-1)?.data as { status?: Delivery } | undefined;
-            return failed?.status ?? "waiting";
-          };
-          const messages = (journal()?.since(seq(0), [MessageSent.name]) ?? []).flatMap((stored): Array<{ id: string; from: "owner" | "rin"; text: string; at: number; delivery?: Delivery }> => {
-            const parsed = MessageEnvelope.safeParse(stored.data);
-            if (!parsed.success) return [];
-            const { from, to } = parsed.data;
-            if (from.kind === "owner" && to.kind === "agent" && to.id === RIN_AGENT) {
-              return [{ id: parsed.data.id, from: "owner" as const, text: contentText(parsed.data), at: stored.at, delivery: delivery(parsed.data.id) }];
+        run: async (input, ctx) => {
+          if (whoIs(ctx.caller) !== "owner") throw new RinRefusal("not-owner", "Only the owner can read this conversation");
+          const rows = journal()?.since(seq(0), [MessageSent.name, AgentTurnDelivered.name, AgentTurnFailed.name, AgentTurnReplied.name]) ?? [];
+          type Entry = { id: string; turn: string; from: "owner" | "rin"; text: string; at: number; delivery?: Delivery };
+          const messages: Entry[] = [];
+          const incoming = new Map<string, Entry>();
+          for (const stored of rows) {
+            if (stored.type === MessageSent.name) {
+              const data = MessageEnvelope.parse(stored.data);
+              if (data.from.kind !== "owner" || data.to.kind !== "agent" || data.to.id !== RIN_AGENT ||
+                  data.replyTo?.channel !== "cockpit" || data.replyTo.conversation !== input.conversation) continue;
+              const message: Entry = { id: data.id, turn: data.id, from: "owner", text: contentText(data), at: stored.at, delivery: "waiting" };
+              incoming.set(data.id, message);
+              messages.push(message);
+            } else if (stored.type === AgentTurnReplied.name) {
+              const data = AgentTurnReplied.schema.parse(stored.data);
+              if (data.agent !== RIN_AGENT || data.replyTo.channel !== "cockpit" ||
+                  data.replyTo.conversation !== input.conversation || !incoming.has(data.turn)) continue;
+              messages.push({ id: String(stored.id), turn: data.turn, from: "rin", text: data.text, at: stored.at });
+            } else if (stored.type === AgentTurnDelivered.name) {
+              const data = AgentTurnDelivered.schema.parse(stored.data);
+              const entry = data.agent === RIN_AGENT ? incoming.get(data.turn) : undefined;
+              if (entry !== undefined) entry.delivery = "delivered";
+            } else {
+              const data = AgentTurnFailed.schema.parse(stored.data);
+              const entry = data.agent === RIN_AGENT ? incoming.get(data.turn) : undefined;
+              if (entry !== undefined && entry.delivery !== "delivered") entry.delivery = data.status;
             }
-            if (from.kind === "agent" && from.id === RIN_AGENT && to.kind === "owner") return [{ id: parsed.data.id, from: "rin" as const, text: contentText(parsed.data), at: stored.at }];
-            return [];
-          });
+          }
           return { messages: messages.slice(-input.limit) };
         },
       }),
@@ -800,10 +851,14 @@ export function rinPlugin(options: RinOptions): Plugin {
     // ---- the charter ----------------------------------------------------------------------------------------
 
     // Corrections about one thing that repeat make a rule due; the record, not this handler, tells her.
-    api.on(Corrected, { id: "consolidate" }, async (data, step) => {
+    api.on(Corrected, { id: "consolidate", concurrency: { by: (data) => data.about } }, async (data, step) => {
       const due = dueFor(charter(), data.about, ruleAfter);
       if (due === undefined) return;
-      await step.emit(CharterDue, { about: data.about, corrections: due });
+      try {
+        await step.emit(CharterDue, { about: data.about, corrections: due });
+      } catch (error) {
+        if (!(error instanceof RecordRefused) || error.code !== "corrections-changed") throw error;
+      }
     });
 
     // She is asked for a rule from the record of what is due, so that a restart between the two does not lose the ask.
@@ -828,19 +883,16 @@ export function rinPlugin(options: RinOptions): Plugin {
         run: async (input, ctx) => {
           const who = whoIs(ctx.caller);
           if (who === "other") throw new RinRefusal("not-owner", "only Rin or the owner proposes a rule of her charter");
-          const state = charter();
-          const known = new Set(state.corrections.map((one) => one.correction));
-          const unknown = input.corrections.filter((id) => !known.has(id));
-          if (unknown.length > 0) throw new RinRefusal("unknown", `there is no correction ${unknown.join(", ")}`);
-          if (who === "rin" && [...state.rules.values()].some((rule) => rule.about === input.about && rule.status === "proposed")) {
-            throw new RinRefusal("open-proposal", `a rule about ${input.about} already waits for the owner's word`);
-          }
           const rule = idOf("rule", String(ctx.operationId));
-          await ctx.emit(CharterProposed, { rule, about: input.about, text: input.text, corrections: input.corrections, by: who === "owner" ? owner : agentAddress(RIN_AGENT) });
+          const proposal = { rule, about: input.about, text: input.text, corrections: input.corrections, by: who === "owner" ? owner : agentAddress(RIN_AGENT) };
           if (who === "owner") {
-            await ctx.emit(CharterRuled, { rule, by: owner });
+            await ctx.emitAll([
+              { type: CharterProposed, data: proposal },
+              { type: CharterRuled, data: { rule, about: input.about, by: owner } },
+            ]);
             return { rule, status: "ruled" as const };
           }
+          await ctx.emit(CharterProposed, proposal);
           return { rule, status: "proposed" as const };
         },
       }),
@@ -849,8 +901,13 @@ export function rinPlugin(options: RinOptions): Plugin {
     // A rule she proposed is put to the owner, and only his yes makes it part of the charter. She is told either way.
     api.on(CharterProposed, { id: "confirm-rule", filter: { "by.kind": "agent" }, concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       const verdict = await askOwner(step, ruleQuestion(data.text, data.about), "ask");
-      if (verdict === "confirmed") await step.emit(CharterRuled, { rule: data.rule, by: owner }, { key: "ruled" });
-      else await step.emit(CharterDeclined, { rule: data.rule, why: verdict }, { key: "declined" });
+      try {
+        if (verdict === "confirmed") await step.emit(CharterRuled, { rule: data.rule, about: data.about, by: owner }, { key: "ruled" });
+        else await step.emit(CharterDeclined, { rule: data.rule, about: data.about, why: verdict }, { key: "declined" });
+      } catch (error) {
+        if (error instanceof RecordRefused && error.code === "rule-closed") return;
+        throw error;
+      }
       const told: Record<Verdict, string> = {
         confirmed: `The owner confirmed a rule of your charter, ${data.rule}: ${data.text}`,
         declined: `The owner declined the rule you proposed: ${data.text}`,
@@ -871,44 +928,103 @@ export function rinPlugin(options: RinOptions): Plugin {
         world: "niwa",
         run: async (input, ctx) => {
           if (whoIs(ctx.caller) !== "rin") throw new RinRefusal("not-rin", "only Rin proposes to change herself");
-          if (options.selfEdit !== true) throw new RinRefusal("self-edit-off", "changing herself by code is turned off");
+          if (selfEdit === "off") throw new RinRefusal("self-edit-off", "changing herself by code is turned off");
           if (!input.plugin.startsWith("rin/")) throw new RinRefusal("not-her-group", `a plugin of hers has a name that begins with rin/, not "${input.plugin}"`);
           if (!isAbsolute(input.module)) throw new RinRefusal("unknown", "give the module as an absolute path");
+          const edit = idOf("edit", String(ctx.operationId));
+          const existing = journal()?.find({ type: SelfEditProposed.name, field: "edit", equals: edit })[0];
+          if (existing !== undefined) return { edit, hash: SelfEditProposed.schema.parse(existing.data).hash };
           const bytes = await readFile(input.module).catch(() => undefined);
           if (bytes === undefined) throw new RinRefusal("unknown", `cannot read the module ${input.module}`);
           const hash = createHash("sha256").update(bytes).digest("hex");
-          const edit = idOf("edit", String(ctx.operationId));
-          await ctx.emit(SelfEditProposed, { edit, plugin: input.plugin, module: input.module, hash, why: input.why });
+          await ctx.emit(SelfEditProposed, { edit, plugin: input.plugin, module: input.module, hash, why: input.why, mode: selfEdit });
           return { edit, hash };
         },
       }),
     );
 
-    // The owner is asked about the file as it was when she asked, and only that file is installed, only on his yes.
-    api.on(SelfEditProposed, { id: "confirm-self-edit", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      const title = `Rin asks to install the plugin ${data.plugin} from ${data.module} (sha256 ${data.hash}): ${data.why}`;
-      const verdict = await askOwner(step, confirmQuestion("rin.self-edit.confirm", title), "ask");
+    api.on(SelfEditProposed, { id: "confirm-self-edit", concurrency: { by: (data) => data.plugin } }, async (data, step) => {
+      const { edit, plugin: name, module, hash } = data;
+      const priorClaim = journal()?.find({ type: SelfEditClaimed.name, field: "edit", equals: edit })[0];
+      const previous = journal()?.find({ type: SelfEditSettled.name, field: "edit", equals: edit })[0];
+      if (previous !== undefined) {
+        const saved = SelfEditSettled.schema.parse(previous.data);
+        return tellEdit(step, { name, hash, ...saved });
+      }
+      const requiresApproval = data.mode === "ask" || selfEdit === "ask";
+      let verdict: Verdict = "confirmed";
+      if (priorClaim === undefined && selfEdit !== "off" && requiresApproval) {
+        const title = `Rin asks to install ${name} from ${module} (sha256 ${hash}): ${data.why}`;
+        verdict = await askOwner(step, confirmQuestion("rin.self-edit.confirm", title), "ask");
+      }
+
       let detail: string | undefined;
-      let outcome: Exclude<Verdict, "confirmed"> | "installed" | "failed";
-      if (verdict !== "confirmed") outcome = verdict;
-      else {
-        const installed = await step.outcome(pluginInstall, { plugin: data.plugin, module: data.module, hash: data.hash }, { key: "install" });
-        outcome = installed.status === "completed" ? "installed" : "failed";
+      let outcome: Exclude<Verdict, "confirmed"> | "installed" | "failed" | "unknown";
+      if (priorClaim === undefined && selfEdit === "off") {
+        outcome = "cancelled";
+        detail = "Self-editing is disabled on this host";
+      } else if (priorClaim === undefined && verdict !== "confirmed") {
+        outcome = verdict;
+      } else {
+        await step.emit(SelfEditClaimed, { edit, plugin: name, hash }, { key: "claim" });
+        const installed = await step.outcome(pluginInstall, { plugin: name, module, hash }, { key: "install" });
+        outcome = installed.status === "completed" ? "installed"
+          : installed.status === "unknown" || (installed.status === "failed" && installed.effectPossible) ? "unknown" : "failed";
         if (installed.status === "failed") detail = installed.error;
         else if (installed.status === "denied" || installed.status === "cancelled") detail = installed.reason;
-        else if (installed.status === "unknown") detail = "the outcome is not known";
+        else if (installed.status === "unknown") detail = "The outcome is not known";
       }
-      await step.emit(SelfEditSettled, { edit: data.edit, outcome, ...(detail === undefined ? {} : { detail }) }, { key: "settled" });
-      const told: Record<typeof outcome, string> = {
-        installed: `The owner approved and the plugin ${data.plugin} is installed.`,
-        failed: `The owner approved the plugin ${data.plugin}, but it was not installed (${firstLine(detail ?? "")}).`,
-        declined: `The owner declined the plugin ${data.plugin}; nothing was installed.`,
-        cancelled: `The question about the plugin ${data.plugin} was cancelled; nothing was installed.`,
-        expired: `The question about the plugin ${data.plugin} was left to expire; nothing was installed.`,
-        "not-his": `The question about the plugin ${data.plugin} was not answered by the owner; nothing was installed.`,
-      };
-      await step(agentNotify, { agent: RIN_AGENT, text: told[outcome] }, { key: "told" });
+      await step.emit(SelfEditSettled, { edit, plugin: name, outcome, ...(detail === undefined ? {} : { detail }) }, { key: "settled" });
+      await tellEdit(step, { name, hash, outcome, detail });
     });
+
+    async function tellEdit(step: Step, edit: { name: string; hash: string; outcome: string; detail?: string | undefined }) {
+      await step(agentNotify, {
+        agent: RIN_AGENT,
+        text: `Installation of ${edit.name} (${edit.hash}): ${edit.outcome}${edit.detail === undefined ? "." : `. ${firstLine(edit.detail)}`}`,
+      }, { key: "told" });
+    }
+
+    api.action(action(rinSelfHistory, {
+      recovery: "repeat",
+      effect: "read",
+      world: "niwa",
+      run: async (_input, ctx) => {
+        if (whoIs(ctx.caller) !== "owner") throw new RinRefusal("not-owner", "Only the owner can read the self-edit history");
+        const rows = journal()?.since(seq(0), [
+          SelfEditProposed.name, SelfEditClaimed.name, SelfEditSettled.name, CORE_TYPES.pluginInstalled, CORE_TYPES.pluginUninstalled,
+        ]) ?? [];
+        type Result = ReturnType<typeof rinSelfHistory.output.parse>;
+        const edits = new Map<string, Result["edits"][number]>();
+        const installed = new Map<string, Result["installed"][number]>();
+        const proposed = new Set<string>();
+        for (const row of rows) {
+          if (row.type === SelfEditProposed.name) {
+            const data = SelfEditProposed.schema.parse(row.data);
+            edits.set(data.edit, { ...data, at: row.at, status: "pending" });
+            proposed.add(`${data.plugin}:${data.hash}`);
+          } else if (row.type === SelfEditClaimed.name) {
+            const edit = edits.get(SelfEditClaimed.schema.parse(row.data).edit);
+            if (edit !== undefined) edit.status = "installing";
+          } else if (row.type === SelfEditSettled.name) {
+            const data = SelfEditSettled.schema.parse(row.data);
+            const edit = edits.get(data.edit);
+            if (edit !== undefined) {
+              edit.status = data.outcome;
+              if (data.detail !== undefined) edit.detail = data.detail;
+            }
+          } else if (row.type === CORE_TYPES.pluginInstalled) {
+            const data = pluginInstall.output.parse(row.data);
+            if (proposed.has(`${data.plugin}:${data.hash}`)) installed.set(data.plugin, data);
+            else installed.delete(data.plugin);
+          } else {
+            const data = row.data as { plugin: string };
+            installed.delete(data.plugin);
+          }
+        }
+        return { mode: selfEdit, edits: [...edits.values()].reverse(), installed: [...installed.values()] };
+      },
+    }));
 
     api.action(
       action(rinCharterRetire, {
@@ -918,8 +1034,8 @@ export function rinPlugin(options: RinOptions): Plugin {
         run: async (input, ctx) => {
           if (whoIs(ctx.caller) !== "owner") throw new RinRefusal("not-owner", "only the owner takes a rule out of Rin's charter");
           const rule = charter().rules.get(input.rule);
-          if (rule === undefined || (rule.status !== "ruled" && rule.status !== "proposed")) throw new RinRefusal("unknown", `"${input.rule}" is not a rule of the charter`);
-          await ctx.emit(CharterRetired, { rule: input.rule, ...(input.reason === undefined ? {} : { reason: input.reason }) });
+          if (rule === undefined) throw new RinRefusal("unknown", `"${input.rule}" is not a rule of the charter`);
+          await ctx.emit(CharterRetired, { rule: input.rule, about: rule.about, ...(input.reason === undefined ? {} : { reason: input.reason }) });
           return { rule: input.rule };
         },
       }),

@@ -13,6 +13,8 @@ import { createHash } from "node:crypto";
 
 import type { AgentOffer } from "@niwa-labs/plugin";
 
+import type { SelfEditMode } from "./records.ts";
+
 /** The name of Rin's agent: her address is `agent:rin`, and she is the agent `niwa agent attach` attaches to by default. */
 export const RIN_AGENT = "rin";
 
@@ -67,7 +69,7 @@ export function coreDigest(text: string): string {
 }
 
 /** How she works in niwa: her attention, her charter, her tools. The stable part of her prompt, under her character. */
-export function workText(options: { readonly selfEdit: boolean }): string {
+export function workText(options: { readonly selfEdit: SelfEditMode }): string {
   const parts = [
     `How you work.
 
@@ -75,16 +77,19 @@ Everything that happens reaches you as a fact in your inbox: a task's outcome, w
 
 Before deciding, weigh what rin.context tells you: whether he is working now, whether these are his quiet hours, how much of the safety ceiling is left, and your charter. What you say now waits by itself during his quiet hours and past the ceiling; you need not count. An occasion that repeats while it holds reaches you once. Raising again what you already told him is insisting, and you insist only by a rule of your charter, which you name; never by repeating yourself.`,
     `Your charter is how the owner wants you to act. It is in this prompt, as it stood when the session began; read it again with rin.charter when it may have changed. It decides, with your judgement, when you speak and when you stay quiet. When he tells you that you got something wrong — your manner, what you brought him, what you decided — record it with rin.correct, from his own words, giving the id of the record that holds them. When corrections about one thing repeat, you are told; if a general rule covers them, word it in one sentence and propose it with rin.charter.propose. It becomes part of the charter only once he confirms it.`,
-    `You are his main agent. Start tasks with task.create, asked by and reporting to agent:rin, and their outcomes come back to you as facts. Make agents with agent.create and give them work with agent.tell or a task. A question you put to him with request.ask comes back to you as a fact that names the request; request.get reads it again. He may step into any of them through a session or through Telegram.
+    `When an owner message names a reply route and turn, answer it with agent.reply using that turn ID. This delivers your reply back to the channel he wrote from.
+
+You are his main agent. Start tasks with task.create, asked by and reporting to agent:rin, and their outcomes come back to you as facts. Make agents with agent.create and give them work with agent.tell or a task. A question you put to him with request.ask comes back to you as a fact that names the request; request.get reads it again. He may step into any of them through a session or through Telegram.
 
 Promises. Your own promises ("I will check tomorrow") you make yourself with commitment.make, within your bounds. A promise on his behalf, or one that sets him a deadline, exists only when he worded it himself or confirmed the deadline you proposed. Every promise is a card he can cancel.
 
 His memory and other agents. When another agent needs what you remember, it gets the conclusion it needs and where it holds, not your notes. Notes about the owner himself do not leave without his answer; facts about a project go freely to the agents of that project. memory.context keeps to this; do not work around it.`,
   ];
-  if (options.selfEdit) {
-    parts.push(
-      `You may change yourself by code: have a plugin written (a coding agent you task can do it) whose name begins with "rin/", in a module file that exports it as its default, and propose it with rin.self.install, naming the file and saying what the plugin does and why. Installing cannot be undone, so the owner is asked every time, and is shown the file's hash: only that file is installed, and only if he says yes. Nothing is installed when you ask; his answer comes back to you as a fact.`,
-    );
+  if (options.selfEdit !== "off") {
+    const approval = options.selfEdit === "ask"
+      ? "The owner must approve the hash of the module for each installation."
+      : "The host allows installation without asking the owner.";
+    parts.push(`You may propose a module in the rin/ group with rin.self.install. Give the absolute path of a file that exports the plugin as its default, and explain the change. ${approval} The result arrives as a fact.`);
   }
   return parts.join("\n\n");
 }
@@ -124,6 +129,7 @@ export const HANDS = [
   "agent.list",
   "agent.get",
   "agent.tell",
+  "agent.reply",
   "agent.notify",
   "agent.briefing",
   "agent.bounds",
@@ -140,8 +146,8 @@ export interface RinDefinitionOptions {
   /** The harness installation her sessions run on, or the role the composition maps to one: exactly one. */
   readonly harness?: string;
   readonly role?: string;
-  /** Whether she may change herself by writing a plugin and installing it (the owner is asked every time). */
-  readonly selfEdit?: boolean;
+  /** Policy for module installs proposed by Rin. Default: off. */
+  readonly selfEdit?: SelfEditMode;
   /** The core of her character; the one of this package unless the owner gives his own. */
   readonly core?: Core;
 }
@@ -153,13 +159,13 @@ export function rinDefinition(options: RinDefinitionOptions): AgentOffer {
   if (seat === undefined) {
     throw new TypeError("rin: she runs on a harness or on a role, exactly one of them");
   }
-  const selfEdit = options.selfEdit === true;
+  const selfEdit = options.selfEdit ?? "off";
   return {
     name: RIN_AGENT,
     ...seat,
     character: (options.core ?? CORE).text,
     prompt: workText({ selfEdit }),
-    hands: selfEdit ? [...HANDS, "rin.self.install"] : [...HANDS],
+    hands: selfEdit !== "off" ? [...HANDS, "rin.self.install"] : [...HANDS],
     tools: "niwa-only",
   };
 }

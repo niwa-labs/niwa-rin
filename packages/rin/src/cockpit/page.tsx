@@ -5,11 +5,12 @@ import { useState } from "react";
 import { useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
 import { Badge, Button } from "@niwa-labs/ui-kit";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, tellAction } from "./actions.ts";
+import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, selfHistoryAction, tellAction, uninstallAction } from "./actions.ts";
 import type { AttentionView } from "./actions.ts";
 import { attentionGroups, charterRows, conversationRows, ledAgents, tileText, whyText } from "./view.ts";
 
 const RIN = "rin";
+const REPLY_ROUTE = { channel: "cockpit", conversation: RIN } as const;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -32,12 +33,15 @@ function Talk() {
       className="flex gap-2"
       onSubmit={(event) => {
         event.preventDefault();
-        if (text.trim() === "") return;
-        tell.mutate({ agent: RIN, text }, { onSuccess: () => setText("") });
+        const sent = text.trim();
+        if (sent === "" || tell.isPending) return;
+        tell.mutate({ agent: RIN, text: sent, replyTo: REPLY_ROUTE }, {
+          onSuccess: () => setText((current) => current.trim() === sent ? "" : current),
+        });
       }}
     >
-      <textarea className="min-h-16 flex-1 rounded-md border bg-background p-2 text-sm" value={text} placeholder="Write to Rin" onChange={(event) => setText(event.target.value)} />
-      <Button type="submit" size="sm" disabled={tell.isPending}>
+      <textarea className="min-h-16 flex-1 rounded-md border bg-background p-2 text-sm" aria-label="Write to Rin" value={text} placeholder="Write to Rin" onChange={(event) => setText(event.target.value)} />
+      <Button type="submit" size="sm" disabled={tell.isPending || text.trim() === ""}>
         Send
       </Button>
       {tell.isError ? <span role="alert" className="text-xs text-destructive">{tell.error.message}</span> : null}
@@ -46,7 +50,7 @@ function Talk() {
 }
 
 function Conversation() {
-  const conversation = useCall(conversationAction, {}, { refreshOn: { types: ["message.*", "agent.turn.*"] } });
+  const conversation = useCall(conversationAction, { conversation: REPLY_ROUTE.conversation }, { refreshOn: { types: ["message.sent", "agent.turn.delivered", "agent.turn.failed", "agent.turn.replied"] } });
   if (conversation.isPending) return <Quiet>Loading…</Quiet>;
   if (conversation.isError) return <p role="alert" className="text-sm text-destructive">{conversation.error.message}</p>;
   const rows = conversationRows(conversation.data.messages);
@@ -54,7 +58,7 @@ function Conversation() {
   return (
     <ul className="flex flex-col gap-2">
       {rows.map((row) => (
-        <li key={row.id} data-slot="rin-message" data-who={row.who} className="flex min-w-0 flex-col rounded-lg border bg-card px-3 py-2">
+        <li key={row.id} data-slot="rin-message" data-who={row.who} data-turn={row.turn} className="flex min-w-0 flex-col rounded-lg border bg-card px-3 py-2">
           <span className="text-sm">
             <span className="font-medium">{row.who}</span> · {row.text}
           </span>
@@ -174,15 +178,68 @@ function Agents() {
   );
 }
 
+function SelfEdits() {
+  const history = useCall(selfHistoryAction, {}, { refreshOn: { types: ["rin.self-edit.*", "niwa.plugin.*"] } });
+  const uninstall = useAction(uninstallAction);
+  const [selected, setSelected] = useState<{ plugin: string; hash: string }>();
+  if (history.isPending) return <Quiet>Loading…</Quiet>;
+  if (history.isError) return <p role="alert" className="text-sm text-destructive">{history.error.message}</p>;
+  const { mode, edits, installed } = history.data;
+  return (
+    <Section title="Rin’s modules">
+      <Quiet>{mode === "off" ? "Installation is disabled." : mode === "ask" ? "Each installation requires your approval." : "Rin can install modules without approval."}</Quiet>
+      {installed.length > 0 ? (
+        <ul className="flex flex-col gap-2 text-sm">
+          {installed.map((entry) => {
+            const confirming = selected?.plugin === entry.plugin && selected.hash === entry.hash;
+            return (
+              <li key={entry.plugin} className="flex items-center gap-2">
+                <span className="mr-auto">{entry.plugin} · {entry.version}</span>
+                {confirming ? (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => setSelected(undefined)} disabled={uninstall.isPending}>Cancel</Button>
+                    <Button size="sm" variant="destructive" disabled={uninstall.isPending} onClick={() => uninstall.mutate(selected, { onSuccess: () => setSelected(undefined) })}>
+                      Confirm uninstall
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="outline" disabled={uninstall.isPending} onClick={() => setSelected(entry)}>Uninstall</Button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {uninstall.isError ? <p role="alert" className="text-sm text-destructive">{uninstall.error.message}</p> : null}
+      {edits.length > 0 ? (
+        <ul className="flex flex-col gap-2 text-sm">
+          {edits.map((edit) => (
+            <li key={edit.edit} className="flex flex-col rounded-lg border bg-card px-3 py-2">
+              <span>{edit.plugin} · {edit.status}</span>
+              <span>{edit.why}</span>
+              <code className="break-all text-xs text-muted-foreground">{edit.hash}</code>
+              {edit.detail ? <span>{edit.detail}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </Section>
+  );
+}
+
 export function RinPage() {
+  const { owner } = useViewer();
   return (
     <div className="flex min-w-0 flex-col gap-5 p-4">
       <h2 className="text-lg font-semibold">Rin</h2>
-      <Section title="Talk to her">
-        <Conversation />
-        <Talk />
-      </Section>
+      {owner ? (
+        <Section title="Talk to her">
+          <Conversation />
+          <Talk />
+        </Section>
+      ) : null}
       <Attention />
+      {owner ? <SelfEdits /> : null}
       <Section title="Her charter">
         <Charter />
       </Section>

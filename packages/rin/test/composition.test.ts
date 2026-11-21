@@ -4,16 +4,17 @@
 import { afterEach, expect, test } from "bun:test";
 
 import { agents } from "@niwa-labs/agent";
-import { AGENT_TYPES, agentAttach, agentBriefing, agentGet } from "@niwa-labs/agent/records";
-import { agent, grant, principalOf } from "@niwa-labs/core";
+import { agentAttach, agentBriefing, agentGet, agentTell } from "@niwa-labs/agent/records";
+import { actionName, agent, grant, principalOf } from "@niwa-labs/core";
 import type { Address, Caller } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
+import { memory } from "@niwa-labs/memory";
 import { requests } from "@niwa-labs/requests";
 import { FAKE_HARNESS, connect, connectAsOwner, createNiwa, eventually, fakeHarness, messages, sessions, tasks, tempHome, timers, workflow } from "@niwa-labs/testing";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 
-import { RIN_AGENT, addressingOf, rin, rinAttend, rinAttention, rinNotice, rinPlugin } from "../src/index.ts";
+import { RIN_AGENT, addressingOf, rin, rinAttend, rinAttention, rinConversation, rinNotice, rinPlugin } from "../src/index.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -67,15 +68,17 @@ test("on a whole host she is the default agent, and what she holds is in her bri
 });
 
 /** What Rin needs of a host, each held by a plugin of its own: the agents, the timers, the workflow module, the messages. */
-function needed(): Plugin[] {
+function needed(options: { telegram?: boolean } = {}): Plugin[] {
   const bind = () => undefined;
   return [
-    plugin("agents", (api) => api.declare(...AGENT_TYPES)),
+    agents(),
+    sessions({ harnesses: [] }),
     timers([]),
     plugin("workflow", (api) => api.declare(RunStarted, RunFinished)),
     messages({ bind }),
     requests({ bind }),
-    rinPlugin({ bind, harness: "claude" }),
+    memory({ bind }),
+    rinPlugin({ bind, harness: "claude", ...options }),
   ];
 }
 
@@ -90,9 +93,11 @@ test("a host with what she needs serves her", async () => {
 
 for (const [missing, what] of [
   ["timers", /plugin "rin" offers "timer"/],
-  ["workflow", /plugin "rin" .*workflow\.run\.finished/],
-  ["messages", /plugin "rin" .*message\.(sent|received)/],
-  ["agents", /plugin "rin" offers "agent/],
+  ["workflow", /"workflow" plugin .*not installed/],
+  ["messages", /"message\.sent".*no installed plugin declares it/],
+  ["agents", /"agents" plugin .*not installed/],
+  ["requests", /plugin "rin" .*request\.ask/],
+  ["memory", /plugin "rin" .*memory\.consolidate/],
 ] as const) {
   test(`a host without ${missing} refuses to serve her and says so`, async () => {
     const home = await tempHome();
@@ -103,3 +108,50 @@ for (const [missing, what] of [
     await expect(niwa.serve()).rejects.toThrow(what);
   });
 }
+
+
+test("Telegram delivery requires telegram.send when requested", async () => {
+  const home = await tempHome();
+  cleanups.push(() => home.cleanup());
+  const niwa = createNiwa({ home: home.path });
+  cleanups.push(() => niwa.close());
+  niwa.use(...needed({ telegram: true }));
+  await expect(niwa.serve()).rejects.toThrow(/plugin "rin" .*telegram\.send/);
+});
+
+test("Cockpit submits a routed message and reads the reply from the session that got the turn", async () => {
+  const home = await tempHome();
+  cleanups.push(() => home.cleanup());
+  const fake = fakeHarness();
+  const control = fake.instance.sides.control!;
+  const instance = { ...fake.instance, sides: { ...fake.instance.sides, control: { ...control, tools: { allow: control.tools?.allow ?? false, niwaOnly: true } } } };
+  const sessionsModule = sessions({ harnesses: [{ ...fake.binding, instance }], niwaMcp: { command: process.execPath, args: ["-e", ""] } });
+  const agentsModule = agents({ default: RIN_AGENT });
+  const bind = addressingOf([sessionsModule, agentsModule]);
+  const niwa = createNiwa({ home: home.path });
+  cleanups.push(() => niwa.close());
+  niwa.use(messages({ bind }), requests({ bind }), tasks({ messages: { bind } }), timers([]), sessionsModule, agentsModule, workflow(), ...rin({ bind, harness: FAKE_HARNESS }));
+  await niwa.serve();
+  const owner = await connectAsOwner(home.path);
+  cleanups.push(() => owner.close());
+  const replyTo = { channel: "cockpit", conversation: "rin" } as const;
+  const { message } = await owner.call(agentTell, { agent: "rin", text: "What shipped?", replyTo });
+  await eventually(async () => (await owner.call(rinConversation, {})).messages[0]?.delivery !== "waiting", 1_000);
+  const deliveries = (await niwa.records.read()).filter(({ type }) => type === "agent.turn.failed");
+  expect(deliveries.map(({ data }) => data)).toEqual([]);
+  expect((await owner.call(rinConversation, {})).messages[0]?.delivery).toBe("delivered");
+  const { session } = await owner.call(agentGet, { agent: "rin" });
+  const records = await niwa.records.read();
+  const mark = records.findLast((row) => row.type === "session.marked" && (row.data as { session?: string }).session === session)?.data as { mark: string } | undefined;
+  if (mark === undefined) throw new Error("the delivered turn must be bound to a session");
+  const token = niwa.issueToken(principalOf("session", mark.mark), { grant: grant(["agent.reply"]) });
+  const rinSession = await connect({ home: home.path, id: "rin-session", token });
+  cleanups.push(() => rinSession.close());
+  await expect(owner.call(actionName("agent.reply"), { turn: message, text: "Forged" })).rejects.toThrow("Only the session");
+  await rinSession.call(actionName("agent.reply"), { turn: message, text: "The cutover landed." });
+  expect((await owner.call(rinConversation, {})).messages).toMatchObject([
+    { turn: message, from: "owner", text: "What shipped?", delivery: "delivered" },
+    { turn: message, from: "rin", text: "The cutover landed." },
+  ]);
+  expect((await owner.call(rinConversation, { conversation: "other" })).messages).toEqual([]);
+});

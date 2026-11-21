@@ -91,6 +91,7 @@ const DELIVERY: Record<NonNullable<ConversationMessage["delivery"]>, string> = {
 
 /** One line of the conversation: who spoke, what, and for what he wrote, where it stands. */
 export interface ConversationRow {
+  readonly turn?: string;
   readonly id: string;
   readonly who: string;
   readonly text: string;
@@ -104,6 +105,7 @@ export function conversationRows(messages: readonly ConversationMessage[]): Conv
     .sort((a, b) => a.at - b.at)
     .map((message) => ({
       id: message.id,
+      ...(message.turn === undefined ? {} : { turn: message.turn }),
       who: message.from === "owner" ? "You" : "Rin",
       text: message.text,
       at: message.at,

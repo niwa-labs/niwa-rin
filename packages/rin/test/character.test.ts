@@ -28,7 +28,7 @@ test("she changes herself by code only when the owner turned it on, and only plu
   expect(plain.hands?.some((hand) => hand.startsWith("plugin.install"))).toBe(false);
   expect(plain.hands).not.toContain("rin.self.install");
   expect(plain.prompt).not.toContain("rin.self.install");
-  const selfEdit = rinDefinition({ role: "assistant", selfEdit: true });
+  const selfEdit = rinDefinition({ role: "assistant", selfEdit: "ask" });
   // Her hand is her own action, which asks the owner; the host's install, even scoped to her group, asks nobody.
   expect(selfEdit.hands).toContain("rin.self.install");
   expect(selfEdit.hands?.some((hand) => hand.startsWith("plugin.install"))).toBe(false);

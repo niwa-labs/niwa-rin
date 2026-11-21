@@ -57,18 +57,18 @@ export const retireAction = {
 export const Delivery = z.enum(["waiting", "delivered", "unsent", "possibly-sent"]);
 export type Delivery = z.infer<typeof Delivery>;
 
-export const ConversationMessage = z.object({ id: z.string(), from: z.enum(["owner", "rin"]), text: z.string(), at: z.number(), delivery: Delivery.optional() });
+export const ConversationMessage = z.object({ id: z.string(), turn: z.string().optional(), from: z.enum(["owner", "rin"]), text: z.string(), at: z.number(), delivery: Delivery.optional() });
 export type ConversationMessage = z.infer<typeof ConversationMessage>;
 
 export const conversationAction = {
   name: "rin.conversation",
-  input: z.object({}),
+  input: z.object({ conversation: z.string() }),
   output: z.object({ messages: z.array(ConversationMessage) }),
 } as const;
 
 export const tellAction = {
   name: "agent.tell",
-  input: z.object({ agent: z.string(), text: z.string() }),
+  input: z.object({ agent: z.string(), text: z.string(), replyTo: z.object({ channel: z.literal("cockpit"), conversation: z.string() }) }),
   output: z.object({ message: z.string() }),
 } as const;
 
@@ -91,4 +91,26 @@ export const memoryAction = {
   name: "memory.top",
   input: z.object({ memory: z.string() }),
   output: z.object({ text: z.string() }),
+} as const;
+
+
+const Installation = z.object({ plugin: z.string(), hash: z.string(), version: z.string() });
+
+export const selfHistoryAction = {
+  name: "rin.self.history",
+  input: z.object({}),
+  output: z.object({
+    mode: z.enum(["off", "ask", "free"]),
+    edits: z.array(z.object({
+      edit: z.string(), plugin: z.string(), hash: z.string(), why: z.string(),
+      mode: z.enum(["ask", "free"]), status: z.string(), detail: z.string().optional(),
+    })),
+    installed: z.array(Installation),
+  }),
+} as const;
+
+export const uninstallAction = {
+  name: "plugin.uninstall",
+  input: Installation.pick({ plugin: true, hash: true }),
+  output: Installation.pick({ plugin: true, hash: true }),
 } as const;

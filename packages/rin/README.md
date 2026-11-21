@@ -26,32 +26,14 @@ const base = defaultComposition({
 
 export default [
   ...base,
-  telegram({ token, owner, speaksFor }),
-  ...rin({ bind: addressingOf(base), role: "assistant", quietHours: { from: "23:00", to: "08:00" } }),
+  telegram({ token, owner, speaksFor, agent: RIN_AGENT }),
+  ...rin({ bind: addressingOf(base), role: "assistant", telegram: true, quietHours: { from: "23:00", to: "08:00" } }),
 ];
 ```
 
-What she needs of the host is not hers to install:
+Rin needs addressing, timers, the workflow and agents modules, messages, and requests. `addressingOf(plugins)` supplies the binding from sessions and agents. Each day Rin consolidates her memory when the configured quiet period ends.
 
-- **addressing**: the binding by which her sessions speak as `agent:rin`
-  and the owner's client as the owner. `addressingOf(plugins)` builds it from
-  the sessions and agents modules; `rin()` refuses to compose without it;
-- **timers**: the end of the owner's quiet hours, and the deadlines of
-  promises;
-- **the workflow module**: the digests of the sessions attached to her, and
-  the runs she starts;
-- **message delivery**: the messages module, which brings her the owner's
-  messages, and an action that tells him something now: `telegram.send` by
-  default, another with `say`.
-
-A host without the timers, the workflow module, the messages or the agents
-module refuses to serve her and says what to install. A host that serves no
-action for `say` only logs it at start: a decision to tell him now is then
-refused, naming the action, and holding it for his next contact still works. She works without the
-web surface: the owner reaches her through `niwa agent attach` and the CLI's
-actions (`agent.tell` to `rin`), and she reaches him through `telegram.send`.
-For his Telegram messages to reach her, the host gives the Telegram surface a
-`toAgent` hook that tells them to `agent:rin` as the owner.
+The Cockpit conversation works on a local host. To configure Telegram, set `telegram: true` in Rin and `agent: RIN_AGENT` in the Telegram plugin. Rin then requires `telegram.send` at host startup. Use `say` to configure another action for proactive messages. With neither configured, Rin can hold a message for the owner's next contact.
 
 ## Character
 
@@ -122,10 +104,15 @@ as facts; she makes agents with `agent.create` and gives them work.
   holds, never her notes. Notes about the owner leave only with his answer;
   facts about a project go to the agents of that project.
 
-With `selfEdit: true` she may change herself by code: she has a plugin of the
-group `rin/` written to a module file and proposes it with `rin.self.install`.
-The owner is asked every time and is shown the file's hash; only that file is
-installed, and only on his own yes. The answer of a resolver is not his word.
+## Module installation
+
+`selfEdit` controls installation of modules in the `rin/` group through `rin.self.install`.
+
+- `off` is the default and disables proposals.
+- `ask` requires a new owner decision for each installation. The request shows the module path, SHA-256 and Rin's reason.
+- `free` lets Rin install the proposed module directly.
+
+The journal keeps each proposal, claim and outcome. The owner can uninstall a current version from the Rin page. The selected SHA-256 identifies the version to remove.
 
 ## Cockpit
 

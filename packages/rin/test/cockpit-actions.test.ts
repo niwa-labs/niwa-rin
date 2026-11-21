@@ -3,17 +3,19 @@
 
 import { afterEach, expect, test } from "bun:test";
 
+import { agents } from "@niwa-labs/agent";
 import { agentList, agentTell } from "@niwa-labs/agent/records";
 import { commitmentList } from "@niwa-labs/commitments/records";
 import { actionName } from "@niwa-labs/core";
+import { memory } from "@niwa-labs/memory";
+import { requests } from "@niwa-labs/requests";
 import { memoryTop } from "@niwa-labs/memory/records";
 import { plugin } from "@niwa-labs/plugin";
-import { createNiwa, messages, tempHome, timers, unreadable, unsendable } from "@niwa-labs/testing";
-import { AGENT_TYPES } from "@niwa-labs/agent/records";
+import { createNiwa, messages, sessions, tempHome, timers, unreadable, unsendable } from "@niwa-labs/testing";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, tellAction } from "../src/cockpit/actions.ts";
-import { rinAttention, rinCharter, rinCharterRetire, rinConversation, rinDismiss } from "../src/records.ts";
+import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, selfHistoryAction, tellAction } from "../src/cockpit/actions.ts";
+import { rinAttention, rinCharter, rinCharterRetire, rinConversation, rinDismiss, rinSelfHistory } from "../src/records.ts";
 import { rinPlugin } from "../src/plugin.ts";
 
 const pairs = [
@@ -23,6 +25,7 @@ const pairs = [
   [retireAction, rinCharterRetire],
   [conversationAction, rinConversation],
   [tellAction, agentTell],
+  [selfHistoryAction, rinSelfHistory],
   [agentsAction, agentList],
   [commitmentsAction, commitmentList],
   [memoryAction, memoryTop],
@@ -48,10 +51,13 @@ test("the plugin offers her page to the cockpit", async () => {
   cleanups.push(() => niwa.close());
   const bind = () => undefined;
   niwa.use(
-    plugin("agents", (api) => api.declare(...AGENT_TYPES)),
+    agents(),
+    sessions({ harnesses: [] }),
     timers([]),
     plugin("workflow", (api) => api.declare(RunStarted, RunFinished)),
     messages({ bind }),
+    requests({ bind }),
+    memory({ bind }),
     rinPlugin({ bind, harness: "claude" }),
   );
   await niwa.serve();

@@ -102,9 +102,9 @@ describe("occasions", () => {
   test("a key that holds is one occasion: a repeat is counted, not opened again", () => {
     const state = foldAttention(
       rows(
-        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "CI is red on PR 101", from: rin }],
-        ["rin.occasion.repeated", { occasion: occ, text: "CI is red on PR 101 again", from: rin }],
-        ["rin.occasion.repeated", { occasion: occ, text: "CI is red on PR 101 again", from: rin }],
+        ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "CI is red on PR 101", from: rin }],
+        ["rin.occasion.repeated", { notice: "fixture", occasion: occ, key: "ci:pr-101", text: "CI is red on PR 101 again", from: rin }],
+        ["rin.occasion.repeated", { notice: "fixture", occasion: occ, key: "ci:pr-101", text: "CI is red on PR 101 again", from: rin }],
       ),
     );
     expect(state.occasions.get(occ)?.count).toBe(3);
@@ -117,8 +117,8 @@ describe("occasions", () => {
   test("once it ended, the same key opens a new occasion", () => {
     const state = foldAttention(
       rows(
-        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
-        ["rin.occasion.ended", { occasion: occ, from: rin }],
+        ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.occasion.ended", { notice: "fixture", occasion: occ, key: "ci:pr-101", from: rin }],
       ),
     );
     expect(noticeOf(state, { key: "ci:pr-101" })).toEqual({ kind: "open" });
@@ -127,9 +127,9 @@ describe("occasions", () => {
   test("what she held about an occasion that ended is dropped by the end record alone, not brought up", () => {
     const state = foldAttention(
       rows(
-        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
         ["rin.attention.held", { item, subject: ci, text: "PR 101 is red", until: "contact", why: "next-contact" }],
-        ["rin.occasion.ended", { occasion: occ, from: rin }],
+        ["rin.occasion.ended", { notice: "fixture", occasion: occ, key: "ci:pr-101", from: rin }],
       ),
     );
     expect(state.items.get(item)?.status).toBe("dropped");
@@ -139,8 +139,8 @@ describe("occasions", () => {
   test("what is held after its occasion ended is dropped at once", () => {
     const state = foldAttention(
       rows(
-        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
-        ["rin.occasion.ended", { occasion: occ, from: rin }],
+        ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.occasion.ended", { notice: "fixture", occasion: occ, key: "ci:pr-101", from: rin }],
         ["rin.attention.held", { item, subject: ci, text: "PR 101 is red", until: "contact", why: "undelivered" }],
       ),
     );
@@ -151,9 +151,9 @@ describe("occasions", () => {
   test("what was on its way when its occasion ended is dropped by an explicit drop", () => {
     const state = foldAttention(
       rows(
-        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
         ["rin.attention.sending", { item, subject: ci, text: "PR 101 is red" }],
-        ["rin.occasion.ended", { occasion: occ, from: rin }],
+        ["rin.occasion.ended", { notice: "fixture", occasion: occ, key: "ci:pr-101", from: rin }],
         ["rin.attention.dropped", { item, occasion: occ }],
       ),
     );
@@ -164,7 +164,7 @@ describe("occasions", () => {
 describe("raising something again", () => {
   const said = foldAttention(
     rows(
-      ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+      ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
       ["rin.attention.said", { item, subject: ci, text: "PR 101 is red", channel: "telegram.send" }],
     ),
   );
@@ -218,8 +218,8 @@ describe("the briefing", () => {
   test("lists what waits for the next contact, with how often its occasion came up", () => {
     const state = foldAttention(
       rows(
-        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
-        ["rin.occasion.repeated", { occasion: occ, text: "red", from: rin }],
+        ["rin.occasion.opened", { notice: "fixture", occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.occasion.repeated", { notice: "fixture", occasion: occ, key: "ci:pr-101", text: "red", from: rin }],
         ["rin.attention.held", { item, subject: ci, text: "PR 101 has been red all night", until: "contact", why: "next-contact" }],
         ["rin.attention.held", { item: "att-00000000b2", subject: { kind: "turn", turn: "fact-abcdef" }, text: "The review task is done", until: "quiet-end", why: "quiet-hours" }],
       ),

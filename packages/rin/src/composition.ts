@@ -3,13 +3,12 @@
  *
  * Rin is built on the agents module and uses memory, commitments and delegation as her tools. What she needs of
  * the host besides is not hers to install: addressing (the binding by which her sessions speak as `agent:rin`),
- * the timers, the workflow module, and message delivery (the messages module, and an action that tells the owner
- * something now, `telegram.send` by default). A host that lacks the timers, the workflow module or the messages
+ * the timers, the workflow module, and the messages module. If Telegram is enabled, she also needs `telegram.send`. A host that lacks the timers, the workflow module or the messages
  * refuses to serve and says what to install; the binding is an option she cannot do without.
  *
  * ```ts
  * const base = defaultComposition({ home, harnesses, agents: { default: RIN_AGENT, roles } });
- * export default [...base, telegram({ ... }), ...rin({ bind: addressingOf(base), role: "assistant" })];
+ * export default [...base, telegram({ ... }), ...rin({ bind: addressingOf(base), role: "assistant", telegram: true })];
  * ```
  */
 
@@ -45,7 +44,8 @@ export const RIN_NEEDS = {
   /** The workflow module: the digests of attached sessions, and the runs she starts. */
   workflow: "@niwa-labs/workflow",
   /** Message delivery: the owner's messages to her, and an action that tells him something now. */
-  delivery: ["@niwa-labs/messages", "telegram.send"],
+  delivery: "@niwa-labs/messages",
+  telegram: "telegram.send",
 } as const;
 
 /** Rin's plugins, to install after the agents module: her memory, commitments, delegation, and Rin herself. */
