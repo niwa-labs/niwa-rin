@@ -46,8 +46,10 @@ What she needs of the host is not hers to install:
 
 A host without the timers, the workflow module, the messages or the agents
 module refuses to serve her and says what to install. She works without the
-web surface: the owner reaches her through `niwa agent attach`, the CLI's
-actions and Telegram.
+web surface: the owner reaches her through `niwa agent attach` and the CLI's
+actions (`agent.tell` to `rin`), and she reaches him through `telegram.send`.
+For his Telegram messages to reach her, the host gives the Telegram surface a
+`toAgent` hook that tells them to `agent:rin` as the owner.
 
 ## Character
 
