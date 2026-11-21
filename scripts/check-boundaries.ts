@@ -241,6 +241,7 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
     "composition",
     {
       "@niwa-labs/sessions": RECORDS,
+      "@niwa-labs/workflow": RECORDS,
       "@niwa-labs/flow": "*",
       "@niwa-labs/flow-eval": "*",
       "@niwa-labs/forge": "*",
