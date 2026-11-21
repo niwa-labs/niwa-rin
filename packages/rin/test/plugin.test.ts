@@ -106,7 +106,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry, realWorkflow = false): Promise<World> {
+async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry, realWorkflow = false, withTelegram = true): Promise<World> {
   const home = await tempHome();
   const clock = testClock(start);
   const host = createNiwa({ home: home.path, clock });
@@ -166,7 +166,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     agentsStub,
     workflowStub,
     memoryStub,
-    telegram,
+    ...(withTelegram ? [telegram] : []),
     rinPlugin({ bind, harness: "claude", quietHours: { from: "23:00", to: "08:00" }, ...options }),
   );
   await host.serve();
@@ -336,6 +336,23 @@ test("what cannot reach him now waits for his next contact, and she is told", as
   await toldCount(w, 2);
   expect(w.told[1]).toContain("did not reach him");
   expect((await w.owner.call(rinAttention, { status: "held" })).items).toMatchObject([{ text: "Main is red", why: "undelivered" }]);
+});
+
+test("a decision to tell him now is refused while the host serves no action that does, and holding it is not", async () => {
+  const w = await world({}, NOON, undefined, false, false);
+  await w.lead.call(rinNotice, { key: "ci:x", kind: "ci", text: "red" });
+  await toldCount(w, 1);
+  const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  await expect(w.rin.call(rinAttend, { subject, decision: "now", text: "Main is red" })).rejects.toThrow('"telegram.send", which nothing on this host serves');
+  expect((await w.owner.call(rinAttention, {})).items).toEqual([]);
+  expect((await w.rin.call(rinAttend, { subject, decision: "next-contact", text: "Main is red" })).outcome).toBe("held");
+});
+
+test("a custom channel is the action named in the refusal", async () => {
+  const w = await world({ say: "slack.post" }, NOON, undefined, false, false);
+  await w.lead.call(rinNotice, { key: "ci:y", kind: "ci", text: "red" });
+  await toldCount(w, 1);
+  await expect(w.rin.call(rinAttend, { subject: { kind: "occasion", occasion: w.lastOccasion() }, decision: "now", text: "x" })).rejects.toThrow('"slack.post"');
 });
 
 test("what may have reached him is not sent again and does not wait for his next contact", async () => {

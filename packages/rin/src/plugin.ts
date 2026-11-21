@@ -128,7 +128,7 @@ export interface RinOptions {
 export class RinRefusal extends Error {
   override name = "RinRefusal";
   constructor(
-    readonly code: "not-rin" | "not-owner" | "unknown" | "no-text" | "already-said" | "insist" | "open-proposal" | "not-his-words" | "self-edit-off" | "not-her-group",
+    readonly code: "not-rin" | "not-owner" | "unknown" | "no-text" | "already-said" | "insist" | "open-proposal" | "not-his-words" | "self-edit-off" | "not-her-group" | "unreachable",
     message: string,
   ) {
     super(message);
@@ -222,9 +222,16 @@ export function rinPlugin(options: RinOptions): Plugin {
       }
     };
 
+    /** Does the host serve the action that tells the owner something now? */
+    const sayServed = (): boolean => api.effectOf(String(say)) !== undefined;
+    const sayMissing = (): string => `plugin "rin" tells the owner something now with the action "${String(say)}", which nothing on this host serves: install the plugin that serves it, or name another action in \`say\``;
+
     // The clock of the host, once it serves: what a read that has no record of its own tells the time by.
     let clock: (() => number) | undefined;
     api.service((ctx) => {
+      // A plugin cannot make the host refuse to serve for an action it lacks, so say so at start; a decision to tell
+      // him now is refused while nothing serves the action (`unreachable`).
+      if (!sayServed()) console.error(`niwa: ${sayMissing()}`);
       clock = () => ctx.now();
       return () => {
         clock = undefined;
@@ -381,6 +388,7 @@ export function rinPlugin(options: RinOptions): Plugin {
             if (!known(input.subject, state)) throw new RinRefusal("unknown", "there is no such occasion that holds, or turn of hers");
             const telling = input.decision === "next-contact" || input.decision === "now" || input.decision === "insist";
             if (telling && input.text === undefined) throw new RinRefusal("no-text", `"${input.decision}" needs the text the owner is to read`);
+            if ((input.decision === "now" || input.decision === "insist") && !sayServed()) throw new RinRefusal("unreachable", `${sayMissing()}; hold it for his next contact instead`);
             if (input.decision === "now" || input.decision === "next-contact") {
               const refused = repeatRefusal(state, input.subject);
               if (refused !== undefined) throw new RinRefusal("already-said", refused);
