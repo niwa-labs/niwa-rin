@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 
-import { attentionGroups, charterRows, ledAgents, tileText, whyText } from "../src/cockpit/view.ts";
+import { attentionGroups, charterRows, conversationRows, ledAgents, tileText, whyText } from "../src/cockpit/view.ts";
 import type { AttentionView, RuleView } from "../src/cockpit/actions.ts";
 
 const item = (n: number, status: AttentionView["status"], extra: Partial<AttentionView> = {}): AttentionView => ({
@@ -52,4 +52,17 @@ test("the agents she leads are every agent but herself", () => {
     { name: "lead", status: "working" as const, source: "runtime" as const },
   ];
   expect(ledAgents(agents).map((one) => one.name)).toEqual(["lead"]);
+});
+
+test("the conversation reads oldest first, with where each of his messages stands", () => {
+  const rows = conversationRows([
+    { id: "msg-000002", from: "rin", text: "Done: two comments", at: 3000 },
+    { id: "msg-000001", from: "owner", text: "Review the migration", at: 1000, delivery: "delivered" },
+    { id: "msg-000003", from: "owner", text: "And the docs", at: 4000, delivery: "waiting" },
+  ]);
+  expect(rows.map((row) => [row.who, row.text, row.state])).toEqual([
+    ["You", "Review the migration", "delivered to her"],
+    ["Rin", "Done: two comments", undefined],
+    ["You", "And the docs", "waiting in her inbox"],
+  ]);
 });

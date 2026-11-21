@@ -27,6 +27,7 @@ import {
   rinCharterPropose,
   rinPromptCharter,
   rinContext,
+  rinConversation,
   rinCorrect,
   rinDismiss,
   rinInbox,
@@ -280,6 +281,30 @@ test("a fact of her inbox, a task's outcome, can be decided about by the id her 
   expect((await w.rin.call(rinInbox, {})).turns).toEqual([]);
   expect((await w.rin.call(rinInbox, { decided: true })).turns).toMatchObject([{ turn: "fact-0a0a0a", decided: true }]);
   expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toBe("- The review task is done: two comments");
+});
+
+test("the conversation shows what he wrote with where it stands, and what she wrote to him", async () => {
+  const w = await world();
+  const first = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "Review the migration" } });
+  const second = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "And the docs" } });
+  const third = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "And the tests" } });
+  await w.lead.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "not his" } });
+  expect((await w.owner.call(rinConversation, {})).messages.map((one) => [one.text, one.from, one.delivery])).toEqual([
+    ["Review the migration", "owner", "waiting"],
+    ["And the docs", "owner", "waiting"],
+    ["And the tests", "owner", "waiting"],
+  ]);
+  await w.agents("agent.turn.delivered", { agent: "rin", turn: first.id, session: "claude s1", receipt: { status: "started" } });
+  await w.agents("agent.turn.failed", { agent: "rin", turn: second.id, status: "unsent", reason: "the harness is gone" });
+  await w.rin.call(messageSendRef, { to: { kind: "owner" }, body: { type: "update", text: "Done: two comments" } });
+  const { messages } = await w.owner.call(rinConversation, {});
+  expect(messages.map((one) => [one.id === third.id ? "third" : one.text, one.from, one.delivery])).toEqual([
+    ["Review the migration", "owner", "delivered"],
+    ["And the docs", "owner", "unsent"],
+    ["third", "owner", "waiting"],
+    ["Done: two comments", "rin", undefined],
+  ]);
+  expect((await w.owner.call(rinConversation, { limit: 2 })).messages.map((one) => one.from)).toEqual(["owner", "rin"]);
 });
 
 test("only Rin decides, and something already said is raised again only by a rule of her charter", async () => {

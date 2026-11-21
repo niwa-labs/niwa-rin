@@ -5,9 +5,9 @@ import { useState } from "react";
 import { useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
 import { Badge, Button } from "@niwa-labs/ui-kit";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, dismissAction, memoryAction, retireAction, tellAction } from "./actions.ts";
+import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, tellAction } from "./actions.ts";
 import type { AttentionView } from "./actions.ts";
-import { attentionGroups, charterRows, ledAgents, tileText, whyText } from "./view.ts";
+import { attentionGroups, charterRows, conversationRows, ledAgents, tileText, whyText } from "./view.ts";
 
 const RIN = "rin";
 
@@ -42,6 +42,29 @@ function Talk() {
       </Button>
       {tell.isError ? <span role="alert" className="text-xs text-destructive">{tell.error.message}</span> : null}
     </form>
+  );
+}
+
+function Conversation() {
+  const conversation = useCall(conversationAction, {}, { refreshOn: { types: ["message.*", "agent.turn.*"] } });
+  if (conversation.isPending) return <Quiet>Loading…</Quiet>;
+  if (conversation.isError) return <p role="alert" className="text-sm text-destructive">{conversation.error.message}</p>;
+  const rows = conversationRows(conversation.data.messages);
+  if (rows.length === 0) return <Quiet>Nothing said yet.</Quiet>;
+  return (
+    <ul className="flex flex-col gap-2">
+      {rows.map((row) => (
+        <li key={row.id} data-slot="rin-message" data-who={row.who} className="flex min-w-0 flex-col rounded-lg border bg-card px-3 py-2">
+          <span className="text-sm">
+            <span className="font-medium">{row.who}</span> · {row.text}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {new Date(row.at).toLocaleString()}
+            {row.state === undefined ? "" : ` · ${row.state}`}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -156,6 +179,7 @@ export function RinPage() {
     <div className="flex min-w-0 flex-col gap-5 p-4">
       <h2 className="text-lg font-semibold">Rin</h2>
       <Section title="Talk to her">
+        <Conversation />
         <Talk />
       </Section>
       <Attention />

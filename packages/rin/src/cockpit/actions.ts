@@ -54,6 +54,18 @@ export const retireAction = {
   output: z.object({ rule: z.string() }),
 } as const;
 
+export const Delivery = z.enum(["waiting", "delivered", "unsent", "possibly-sent"]);
+export type Delivery = z.infer<typeof Delivery>;
+
+export const ConversationMessage = z.object({ id: z.string(), from: z.enum(["owner", "rin"]), text: z.string(), at: z.number(), delivery: Delivery.optional() });
+export type ConversationMessage = z.infer<typeof ConversationMessage>;
+
+export const conversationAction = {
+  name: "rin.conversation",
+  input: z.object({}),
+  output: z.object({ messages: z.array(ConversationMessage) }),
+} as const;
+
 export const tellAction = {
   name: "agent.tell",
   input: z.object({ agent: z.string(), text: z.string() }),

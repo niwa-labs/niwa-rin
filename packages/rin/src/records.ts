@@ -389,6 +389,28 @@ export const rinInbox = actionRef("rin.inbox", {
   }),
 });
 
+/** Where a message of the owner's to Rin stands: waiting in her inbox, in her session, or not delivered. */
+export const Delivery = z.enum(["waiting", "delivered", "unsent", "possibly-sent"]);
+export type Delivery = z.output<typeof Delivery>;
+
+export const rinConversation = actionRef("rin.conversation", {
+  description:
+    "The conversation between the owner and Rin, oldest first, the last of it: what he wrote to her, with where each message stands (waiting in her inbox, delivered to her session, not delivered), and what she wrote to him.",
+  input: z.object({ limit: z.number().int().positive().max(200).default(50) }),
+  output: z.object({
+    messages: z.array(
+      z.object({
+        id: z.string(),
+        from: z.enum(["owner", "rin"]),
+        text: z.string(),
+        at: z.number(),
+        /** For what he wrote: where it stands. */
+        delivery: Delivery.optional(),
+      }),
+    ),
+  }),
+});
+
 export const rinBriefing = actionRef("rin.briefing", {
   description: "Rin's section of a briefing: what she held for the owner's next contact, and the rules of her charter that wait for his word.",
   input: z.object({ agent: AgentName }),
@@ -402,4 +424,4 @@ export const rinPromptCharter = actionRef("rin.prompt.charter", {
 });
 
 /** The actions of Rin's attention and charter, for her hands. */
-export const RIN_ACTIONS = [rinNotice, rinAttend, rinInbox, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter, rinSelfInstall] as const;
+export const RIN_ACTIONS = [rinNotice, rinAttend, rinInbox, rinConversation, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter, rinSelfInstall] as const;

@@ -12,8 +12,8 @@ import { createNiwa, messages, tempHome, timers, unreadable, unsendable } from "
 import { AGENT_TYPES } from "@niwa-labs/agent/records";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, dismissAction, memoryAction, retireAction, tellAction } from "../src/cockpit/actions.ts";
-import { rinAttention, rinCharter, rinCharterRetire, rinDismiss } from "../src/records.ts";
+import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, tellAction } from "../src/cockpit/actions.ts";
+import { rinAttention, rinCharter, rinCharterRetire, rinConversation, rinDismiss } from "../src/records.ts";
 import { rinPlugin } from "../src/plugin.ts";
 
 const pairs = [
@@ -21,6 +21,7 @@ const pairs = [
   [dismissAction, rinDismiss],
   [charterAction, rinCharter],
   [retireAction, rinCharterRetire],
+  [conversationAction, rinConversation],
   [tellAction, agentTell],
   [agentsAction, agentList],
   [commitmentsAction, commitmentList],

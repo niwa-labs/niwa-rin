@@ -1,6 +1,6 @@
 /** What Rin's page shows, as plain data: the page renders it, and the tests read it without React. */
 
-import type { AgentView, AttentionView, RuleView } from "./actions.ts";
+import type { AgentView, AttentionView, ConversationMessage, RuleView } from "./actions.ts";
 
 /** The items of her attention, as the page groups them. */
 export interface AttentionGroups {
@@ -80,4 +80,33 @@ export function charterRows(rules: readonly RuleView[]): CharterRow[] {
 /** The agents she leads: every agent of the host but herself. */
 export function ledAgents<T extends Pick<AgentView, "name">>(agents: readonly T[], self = "rin"): T[] {
   return agents.filter((agent) => agent.name !== self);
+}
+
+const DELIVERY: Record<NonNullable<ConversationMessage["delivery"]>, string> = {
+  waiting: "waiting in her inbox",
+  delivered: "delivered to her",
+  unsent: "not delivered",
+  "possibly-sent": "may not have reached her",
+};
+
+/** One line of the conversation: who spoke, what, and for what he wrote, where it stands. */
+export interface ConversationRow {
+  readonly id: string;
+  readonly who: string;
+  readonly text: string;
+  readonly at: number;
+  readonly state?: string;
+}
+
+/** The conversation, oldest first as it was written. */
+export function conversationRows(messages: readonly ConversationMessage[]): ConversationRow[] {
+  return [...messages]
+    .sort((a, b) => a.at - b.at)
+    .map((message) => ({
+      id: message.id,
+      who: message.from === "owner" ? "You" : "Rin",
+      text: message.text,
+      at: message.at,
+      ...(message.delivery === undefined ? {} : { state: DELIVERY[message.delivery] }),
+    }));
 }

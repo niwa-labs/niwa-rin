@@ -31,7 +31,7 @@ import type { TurnAuthor } from "@niwa-labs/agent/records";
 import { CommitmentCancelled, CommitmentMade } from "@niwa-labs/commitments/records";
 import { DecisionMade, DecisionRevoked } from "@niwa-labs/delegate/records";
 import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten } from "@niwa-labs/memory/records";
-import { Message as MessageEnvelope, MessageReceived, MessageSent } from "@niwa-labs/messages/records";
+import { Message as MessageEnvelope, MessageReceived, MessageSent, contentText } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
 import { timer } from "@niwa-labs/timer";
@@ -91,6 +91,7 @@ import {
   rinCharterPropose,
   rinCharterRetire,
   rinContext,
+  rinConversation,
   rinCorrect,
   rinDismiss,
   rinInbox,
@@ -98,7 +99,7 @@ import {
   rinPromptCharter,
   rinSelfInstall,
 } from "./records.ts";
-import type { Contact, NoteChange, OccasionId, Subject, Topic } from "./records.ts";
+import type { Contact, Delivery, NoteChange, OccasionId, Subject, Topic } from "./records.ts";
 
 /** What the Rin plugin is made with. */
 export interface RinOptions {
@@ -514,6 +515,33 @@ export function rinPlugin(options: RinOptions): Plugin {
             return turn.success ? [{ turn: turn.data.turn, kind: turn.data.kind, from: turn.data.author, text: firstLine(turn.data.text, 300), decided: decided.has(turn.data.turn) }] : [];
           });
           return { turns: turns.filter((one) => input.decided === undefined ? !one.decided : one.decided === input.decided).reverse().slice(0, input.limit) };
+        },
+      }),
+    );
+
+    api.action(
+      action(rinConversation, {
+        recovery: "repeat",
+        effect: "read",
+        world: "niwa",
+        run: async (input) => {
+          const delivery = (turn: string): Delivery => {
+            const at = (type: RecordType<unknown>) => journal()?.find({ type: type.name, field: "turn", equals: turn }).filter((stored) => (stored.data as { agent?: unknown }).agent === RIN_AGENT) ?? [];
+            if (at(AgentTurnDelivered).length > 0) return "delivered";
+            const failed = at(AgentTurnFailed).at(-1)?.data as { status?: Delivery } | undefined;
+            return failed?.status ?? "waiting";
+          };
+          const messages = (journal()?.since(seq(0), [MessageSent.name]) ?? []).flatMap((stored): Array<{ id: string; from: "owner" | "rin"; text: string; at: number; delivery?: Delivery }> => {
+            const parsed = MessageEnvelope.safeParse(stored.data);
+            if (!parsed.success) return [];
+            const { from, to } = parsed.data;
+            if (from.kind === "owner" && to.kind === "agent" && to.id === RIN_AGENT) {
+              return [{ id: parsed.data.id, from: "owner" as const, text: contentText(parsed.data), at: stored.at, delivery: delivery(parsed.data.id) }];
+            }
+            if (from.kind === "agent" && from.id === RIN_AGENT && to.kind === "owner") return [{ id: parsed.data.id, from: "rin" as const, text: contentText(parsed.data), at: stored.at }];
+            return [];
+          });
+          return { messages: messages.slice(-input.limit) };
         },
       }),
     );
