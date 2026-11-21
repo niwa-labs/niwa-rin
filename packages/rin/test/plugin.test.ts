@@ -268,7 +268,9 @@ test("concurrent notices share an occasion claim and retry with the claimed text
   expect(notices.map(({ status }) => status).sort()).toEqual(["opened", "repeated", "repeated"]);
   await eventually(async () => (await w.records("rin.occasion.claimed")).length === 1);
   const claim = (await w.records("rin.occasion.claimed"))[0]?.data as { occasion: string; text: string };
-  expect(claim.occasion).toEqual(notices[0]?.occasion);
+  const [opened] = notices;
+  if (opened?.occasion === undefined) throw new Error("the notice must name an occasion");
+  expect(claim.occasion).toBe(opened.occasion);
   await w.owner.call(rinCharterPropose, { about: "tone", text: "Stay brief" });
   await w.retryPaused();
   await toldCount(w, 1);
