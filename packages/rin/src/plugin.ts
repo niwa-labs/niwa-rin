@@ -370,7 +370,7 @@ export function rinPlugin(options: RinOptions): Plugin {
         const occasion = state.occasions.get(subject.occasion);
         return occasion !== undefined && state.open.get(occasion.key) === occasion.occasion;
       }
-      return (journal()?.since(seq(0), [AgentTurnQueued.name]) ?? []).some((stored) => {
+      return (journal()?.find({ type: AgentTurnQueued.name, field: "turn", equals: subject.turn }) ?? []).some((stored) => {
         const turn = stored.data as { agent?: unknown; turn?: unknown };
         return turn.agent === RIN_AGENT && turn.turn === subject.turn;
       });
@@ -755,7 +755,7 @@ export function rinPlugin(options: RinOptions): Plugin {
     });
 
     api.on(CommitmentCancelled, { id: "commitment-cancelled", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
-      const made = (journal()?.since(seq(0), [CommitmentMade.name]) ?? []).find((one) => (one.data as { id?: unknown }).id === data.id);
+      const made = journal()?.find({ type: CommitmentMade.name, field: "id", equals: data.id })[0];
       const by = (made?.data as { by?: Address; text?: string } | undefined)?.by;
       if (by?.kind !== "agent" || by.id !== RIN_AGENT) return;
       const text = (made?.data as { text?: string }).text ?? data.id;
@@ -763,7 +763,7 @@ export function rinPlugin(options: RinOptions): Plugin {
     });
 
     api.on(DecisionRevoked, { id: "decision-revoked", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
-      const made = (journal()?.since(seq(0), [DecisionMade.name]) ?? []).find((one) => (one.data as { id?: unknown }).id === data.decision);
+      const made = journal()?.find({ type: DecisionMade.name, field: "id", equals: data.decision })[0];
       const decided = made?.data as { by?: Address; description?: string; area?: string } | undefined;
       if (decided?.by?.kind !== "agent" || decided.by.id !== RIN_AGENT) return;
       await actedOut(step, stored, "decisions", `The owner revoked your decision on "${firstLine(decided.description ?? data.decision)}" in ${decided.area ?? "its area"}${data.reason === undefined ? "" : `: ${data.reason}`}`);
@@ -771,7 +771,7 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     /** What she asked the owner, when it was she who asked. */
     const herQuestion = (request: string): string | undefined => {
-      const created = (journal()?.since(seq(0), [RequestCreated.name]) ?? []).find((one) => (one.data as { id?: unknown }).id === request);
+      const created = journal()?.find({ type: RequestCreated.name, field: "id", equals: request })[0];
       const data = created?.data as { from?: Address; to?: Address; input?: { title?: string } } | undefined;
       if (data?.to?.kind !== "owner" || data.from?.kind !== "agent" || data.from.id !== RIN_AGENT) return undefined;
       return data.input?.title ?? request;
