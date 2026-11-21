@@ -720,6 +720,15 @@ export function rinPlugin(options: RinOptions): Plugin {
       if (data?.to?.kind !== "owner" || data.from?.kind !== "agent" || data.from.id !== RIN_AGENT) return undefined;
       return data.input?.title ?? request;
     };
+    // What the owner answered reaches her as a fact that names the request: she asked, and learns the answer
+    // without polling. An answer that was not his (a resolver's) is told as such.
+    api.on(RequestAnswered, { id: "question-answered" }, async (data, step) => {
+      const title = herQuestion(data.id);
+      if (title === undefined) return;
+      const answer = "ids" in data.answer ? `chose ${data.answer.ids.join(", ")}` : "text" in data.answer ? `said: ${data.answer.text}` : "form" in data.answer ? `filled in: ${JSON.stringify(data.answer.form)}` : "withdrew the question";
+      const who = data.by?.kind === "owner" ? "The owner" : `Not the owner but a resolver${data.how === undefined ? "" : ` (${data.how})`}`;
+      await step(agentNotify, { agent: RIN_AGENT, text: `Request ${data.id}, your question "${firstLine(title)}": ${who} ${answer}.` });
+    });
     api.on(RequestCancelledRecord, { id: "question-turned-down", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
       const title = herQuestion(data.id);
       if (title === undefined) return;

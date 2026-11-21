@@ -574,6 +574,23 @@ test("a rule the owner declines stays out of the charter", async () => {
   expect(rules).toMatchObject([{ rule: proposed.rule, status: "declined" }]);
 });
 
+test("what the owner answers to a question of hers comes back to her as a fact, and a resolver's answer is told as not his", async () => {
+  const w = await world();
+  const choice = { kind: "choice", title: "Shall I archive the old branches?", options: [{ id: "yes", label: "yes", flavor: "plain" }, { id: "no", label: "no", flavor: "plain" }] } as never;
+  const first = (await w.rin.call(requestAsk, { to: { kind: "owner" }, question: "rin.archive" as never, input: choice })) as { id: string };
+  await w.owner.call(requestAnswer, { id: first.id as never, answer: { ids: ["no"] } as never });
+  await toldCount(w, 1);
+  expect(w.told[0]).toContain(first.id);
+  expect(w.told[0]).toContain("Shall I archive the old branches?");
+  expect(w.told[0]).toContain("The owner chose no");
+
+  const second = await world({}, NOON, resolving("yes"));
+  const asked = (await second.rin.call(requestAsk, { to: { kind: "owner" }, question: "rin.archive" as never, input: choice })) as { id: string };
+  await toldCount(second, 1);
+  expect(second.told[0]).toContain(asked.id);
+  expect(second.told[0]).toContain("Not the owner but a resolver");
+});
+
 test("what the owner acts out is a correction: a question of hers turned down, something she told him waved away", async () => {
   const w = await world();
   const ask = await w.rin.call(requestAsk, { to: { kind: "owner" }, question: "rin.check" as never, input: { kind: "choice", title: "Shall I archive the old branches?", options: [{ id: "yes", label: "yes", flavor: "plain" }] } as never });
