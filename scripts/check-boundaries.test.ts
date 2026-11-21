@@ -4,13 +4,14 @@ import { checkGraph, checkPackages, GRAPH, type PackageInput } from "./check-bou
 function pkg(
   name: string,
   source: string,
-  options: { deps?: Record<string, string>; file?: string } = {},
+  options: { deps?: Record<string, string>; file?: string; exports?: Record<string, string> } = {},
 ): PackageInput {
   const dir = `packages/${name.replace(/^@niwa-labs\//, "")}`;
   const entries = GRAPH[name]?.entries ?? ["."];
-  const exportsMap = Object.fromEntries(
-    entries.map((e) => [e, e === "." ? "./src/index.ts" : `./src/${e.slice(2)}.ts`]),
-  );
+  const exportsMap: Record<string, string> = {
+    ...Object.fromEntries(entries.map((e) => [e, e === "." ? "./src/index.ts" : `./src/${e.slice(2)}.ts`])),
+    ...options.exports,
+  };
   const files = Object.values(exportsMap).map((target) => ({ path: `${dir}/${target.slice(2)}`, source: "export {};" }));
   files.push({ path: `${dir}/${options.file ?? "src/main.ts"}`, source });
   return { dir, manifest: { name, exports: exportsMap, dependencies: options.deps ?? {} }, files };
@@ -160,5 +161,83 @@ describe("check-boundaries", () => {
   test("rejects a manifest dependency outside the graph", () => {
     const flow = pkg("@niwa-labs/flow", "export {};", { deps: { "@niwa-labs/host": "*" } });
     expect(rules([flow])).toEqual(["manifest-dependency"]);
+  });
+
+  describe("cockpit modules", () => {
+    const COCKPIT_DEPS = { "@niwa-labs/cockpit-sdk": "workspace:*", "@niwa-labs/ui-kit": "workspace:*" };
+    const cockpit = { "./cockpit": "./src/cockpit.tsx" };
+    const LIBS = [pkg("@niwa-labs/cockpit-sdk", "export {};"), pkg("@niwa-labs/ui-kit", "export {};")];
+
+    test("lets a plugin export a cockpit module built on the SDK, the kit and React", () => {
+      const module = pkg(
+        "@niwa-labs/requests",
+        `import { definePlugin } from "@niwa-labs/cockpit-sdk";
+import { Button } from "@niwa-labs/ui-kit";
+import { useState } from "react";`,
+        { deps: COCKPIT_DEPS, exports: cockpit, file: "src/cockpit.tsx" },
+      );
+      expect(rules([module, ...LIBS])).toEqual([]);
+    });
+
+    test("lets a cockpit module keep its files in a folder", () => {
+      const module = pkg("@niwa-labs/requests", `import { definePlugin } from "@niwa-labs/cockpit-sdk";`, {
+        deps: COCKPIT_DEPS,
+        exports: { "./cockpit": "./src/cockpit/index.tsx" },
+        file: "src/cockpit/page.tsx",
+      });
+      expect(rules([module, ...LIBS])).toEqual([]);
+    });
+
+    test("does not require a plugin to export a cockpit module", () => {
+      expect(rules([pkg("@niwa-labs/requests", "export {};")])).toEqual([]);
+    });
+
+    test("rejects a package that is not a plugin exporting a cockpit module", () => {
+      const flow = pkg("@niwa-labs/flow", "export {};", { exports: cockpit });
+      expect(rules([flow])).toEqual(["exports"]);
+    });
+
+    test("rejects a cockpit export that points at no file", () => {
+      const requests = pkg("@niwa-labs/requests", "export {};", { exports: { "./cockpit": "./src/missing.tsx" } });
+      requests.files = requests.files.filter((file) => !file.path.endsWith("missing.tsx"));
+      expect(rules([requests])).toEqual(["exports"]);
+    });
+
+    test("rejects the SDK, the kit and React outside the cockpit module of a plugin", () => {
+      for (const specifier of ["@niwa-labs/cockpit-sdk", "@niwa-labs/ui-kit", "react", "react-dom/client", "@tanstack/react-query"]) {
+        const requests = pkg("@niwa-labs/requests", `import "${specifier}";`, { deps: COCKPIT_DEPS });
+        expect(rules([requests, ...LIBS])).toEqual(["cockpit-entry"]);
+      }
+    });
+
+    test("rejects host code importing the cockpit module", () => {
+      const requests = pkg("@niwa-labs/requests", `import module from "./cockpit.tsx";`, { exports: cockpit });
+      expect(rules([requests])).toEqual(["cockpit-entry"]);
+      const folder = pkg("@niwa-labs/requests", `import module from "./cockpit";`, { exports: cockpit });
+      expect(rules([folder])).toEqual(["cockpit-entry"]);
+    });
+
+    test("lets a test import the cockpit module", () => {
+      const requests = pkg("@niwa-labs/requests", `import module from "../src/cockpit.tsx";`, {
+        exports: cockpit,
+        file: "test/cockpit.test.ts",
+      });
+      expect(rules([requests])).toEqual([]);
+    });
+
+    test("keeps a cockpit module under the plugin rules for everything else", () => {
+      const requests = pkg("@niwa-labs/requests", `import { start } from "@niwa-labs/sessions";`, {
+        deps: { "@niwa-labs/sessions": "workspace:*" },
+        exports: cockpit,
+        file: "src/cockpit.tsx",
+      });
+      expect(rules([requests, pkg("@niwa-labs/sessions", "export {};")])).toContain("plugin-entry");
+    });
+
+    test("offers the theme of the kit as a stylesheet entry", () => {
+      expect(GRAPH["@niwa-labs/ui-kit"]?.entries).toEqual([".", "./theme.css"]);
+      const web = pkg("@niwa-labs/cockpit", `import "@niwa-labs/ui-kit/theme.css";`, { deps: { "@niwa-labs/ui-kit": "workspace:*" } });
+      expect(rules([web, pkg("@niwa-labs/ui-kit", "export {};")])).toEqual([]);
+    });
   });
 });

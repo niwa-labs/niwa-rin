@@ -28,12 +28,18 @@ export type PackageSpec = {
   zone: Zone;
   kind: Kind;
   entries: readonly string[];
+  /** Entries a package may export but need not. */
+  optionalEntries?: readonly string[];
   deps: Readonly<Record<string, EntryAllowance>>;
 };
 
 const ZONE_RANK: Record<Zone, number> = { independent: 0, foundation: 1, built: 2, leaf: 3 };
 
 const ROOT = ["."] as const;
+/** The client module a plugin may export for the cockpit. */
+const COCKPIT_ENTRY = "./cockpit";
+/** What a cockpit module is built on; only the files of the cockpit entry may import them. */
+const COCKPIT_LIBS = { "@niwa-labs/cockpit-sdk": ROOT, "@niwa-labs/ui-kit": ROOT } as const;
 const PLUGIN = [".", "./records"] as const;
 const PLUGIN_FLOW = [".", "./records", "./flow"] as const;
 const CONTRACTS = { "@niwa-labs/core": ROOT } as const;
@@ -50,11 +56,11 @@ function lib(deps: PackageSpec["deps"] = {}): PackageSpec {
 }
 
 function basePlugin(deps: PackageSpec["deps"] = {}, entries: readonly string[] = PLUGIN): PackageSpec {
-  return { repo: "niwa", zone: "built", kind: "plugin", entries, deps: { ...ON_HOST, ...deps } };
+  return { repo: "niwa", zone: "built", kind: "plugin", entries, optionalEntries: [COCKPIT_ENTRY], deps: { ...ON_HOST, ...COCKPIT_LIBS, ...deps } };
 }
 
 function extraPlugin(deps: PackageSpec["deps"] = {}, entries: readonly string[] = PLUGIN): PackageSpec {
-  return { repo: "plugins", zone: "built", kind: "plugin", entries, deps: { ...ON_HOST, ...deps } };
+  return { repo: "plugins", zone: "built", kind: "plugin", entries, optionalEntries: [COCKPIT_ENTRY], deps: { ...ON_HOST, ...COCKPIT_LIBS, ...deps } };
 }
 
 function leaf(kind: Kind, deps: PackageSpec["deps"], repo: Repo = "niwa"): PackageSpec {
@@ -76,7 +82,7 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/harness-zcode": lib(KIND_DEPS),
   "@niwa-labs/digest": lib({ "@niwa-labs/harness": "*" }),
   "@niwa-labs/sandbox": lib(),
-  "@niwa-labs/ui-kit": lib(),
+  "@niwa-labs/ui-kit": { ...lib(), entries: [".", "./theme.css"] },
 
   // Zone II: the foundation.
   "@niwa-labs/core": { repo: "niwa", zone: "foundation", kind: "foundation", entries: [".", "./journal"], deps: {} },
@@ -262,7 +268,8 @@ type Rule =
   | "undeclared"
   | "zone"
   | "graph"
-  | "plugin-entry";
+  | "plugin-entry"
+  | "cockpit-entry";
 
 /** Splits `@niwa-labs/x/sub` or `niwa/sub` into a package name and an export key. */
 export function parseSpecifier(specifier: string): { name: string; entry: string } | null {
@@ -289,6 +296,23 @@ function isTestFile(path: string): boolean {
 function isFlowFile(pkgDir: string, path: string): boolean {
   const inside = relative(pkgDir, path).split(sep).join("/");
   return inside === "src/flow.ts" || inside.startsWith("src/flow/");
+}
+
+/** The files of a plugin's cockpit module: the entry file, or the folder behind it. */
+function isCockpitFile(pkgDir: string, path: string): boolean {
+  const inside = relative(pkgDir, path).split(sep).join("/");
+  return /^src\/cockpit(\.tsx?)?$/.test(inside) || inside.startsWith("src/cockpit/");
+}
+
+/** What only a cockpit module may import: the cockpit's own libraries and React. */
+function isCockpitLibrary(specifier: string): boolean {
+  return (
+    specifier === "@niwa-labs/cockpit-sdk" ||
+    specifier === "@niwa-labs/ui-kit" ||
+    specifier.startsWith("@niwa-labs/ui-kit/") ||
+    /^react(-dom)?(\/|$)/.test(specifier) ||
+    specifier.startsWith("@tanstack/react-")
+  );
 }
 
 function declaredDeps(manifest: PackageInput["manifest"]): Record<string, string> {
@@ -324,8 +348,11 @@ export function checkPackages(
 
     const exported = Object.keys(pkg.manifest.exports ?? {}).sort();
     const expected = [...spec.entries].sort();
-    if (exported.join() !== expected.join()) {
-      report(manifestPath, "exports", `${name} must export exactly ${expected.join(", ")}`);
+    const optional = spec.optionalEntries ?? [];
+    const required = exported.filter((key) => !optional.includes(key));
+    if (required.join() !== expected.join()) {
+      const maybe = optional.length === 0 ? "" : ` and may export ${optional.join(", ")}`;
+      report(manifestPath, "exports", `${name} must export exactly ${expected.join(", ")}${maybe}`);
     }
     const filePaths = new Set(pkg.files.map((f) => f.path));
     for (const [key, target] of Object.entries(pkg.manifest.exports ?? {})) {
@@ -349,14 +376,20 @@ export function checkPackages(
 
     for (const file of pkg.files) {
       if (!/\.(ts|tsx|mts|cts)$/.test(file.path)) continue;
+      const cockpitFile = isCockpitFile(pkg.dir, file.path);
       for (const specifier of importsOf(file.source)) {
         if (specifier.startsWith(".")) {
           const target = resolve("/", dirname(file.path), specifier);
           const root = resolve("/", pkg.dir);
           if (target !== root && !target.startsWith(root + sep)) {
             report(file.path, "internal-file", `${specifier} reaches outside ${name}; import a package entry instead`);
+          } else if (spec.kind === "plugin" && !cockpitFile && !isTestFile(file.path) && isCockpitFile(root, target)) {
+            report(file.path, "cockpit-entry", `${specifier} reaches the cockpit module, which only the cockpit loads`);
           }
           continue;
+        }
+        if (spec.kind === "plugin" && !cockpitFile && !isTestFile(file.path) && isCockpitLibrary(specifier)) {
+          report(file.path, "cockpit-entry", `${specifier} may be imported only by the cockpit module of ${name}`);
         }
         const parsed = parseSpecifier(specifier);
         if (parsed === null || parsed.name === name) continue;
