@@ -16,7 +16,7 @@ const newestFirst = (a: AttentionView, b: AttentionView) => b.at - a.at;
 
 export function attentionGroups(items: readonly AttentionView[]): AttentionGroups {
   const of = (statuses: readonly AttentionView["status"][]) => items.filter((item) => statuses.includes(item.status)).sort(newestFirst);
-  return { waiting: of(["held", "sending"]), told: of(["said", "brought"]), closed: of(["dropped", "dismissed"]) };
+  return { waiting: of(["held", "sending"]), told: of(["said", "unsure", "brought"]), closed: of(["dropped", "dismissed"]) };
 }
 
 const WHY: Record<NonNullable<AttentionView["why"]>, string> = {
@@ -29,6 +29,7 @@ const WHY: Record<NonNullable<AttentionView["why"]>, string> = {
 const STATUS: Record<AttentionView["status"], string> = {
   held: "waits",
   sending: "on its way",
+  unsure: "may have reached you",
   said: "told you",
   brought: "brought up when you came",
   dropped: "no longer holds",

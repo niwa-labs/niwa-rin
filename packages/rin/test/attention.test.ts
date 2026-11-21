@@ -9,9 +9,10 @@ import {
   foldAttention,
   inQuietHours,
   insistRefusal,
-  nowRefusal,
+  pendingAbout,
   noticeOf,
   quietEnds,
+  repeatRefusal,
   routeOf,
   type Row,
 } from "../src/attention.ts";
@@ -123,16 +124,40 @@ describe("occasions", () => {
     expect(noticeOf(state, { key: "ci:pr-101" })).toEqual({ kind: "open" });
   });
 
-  test("what she held about an occasion that ended is dropped, not brought up", () => {
+  test("what she held about an occasion that ended is dropped by the end record alone, not brought up", () => {
     const state = foldAttention(
       rows(
         ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
         ["rin.attention.held", { item, subject: ci, text: "PR 101 is red", until: "contact", why: "next-contact" }],
-        ["rin.attention.dropped", { item, occasion: occ }],
+        ["rin.occasion.ended", { occasion: occ, from: rin }],
       ),
     );
     expect(state.items.get(item)?.status).toBe("dropped");
     expect(briefingText(state)).toBe("");
+  });
+
+  test("what is held after its occasion ended is dropped at once", () => {
+    const state = foldAttention(
+      rows(
+        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.occasion.ended", { occasion: occ, from: rin }],
+        ["rin.attention.held", { item, subject: ci, text: "PR 101 is red", until: "contact", why: "undelivered" }],
+      ),
+    );
+    expect(state.items.get(item)?.status).toBe("dropped");
+    expect(briefingText(state)).toBe("");
+  });
+
+  test("what was on its way when its occasion ended is dropped by an explicit drop", () => {
+    const state = foldAttention(
+      rows(
+        ["rin.occasion.opened", { occasion: occ, key: "ci:pr-101", kind: "ci", text: "red", from: rin }],
+        ["rin.attention.sending", { item, subject: ci, text: "PR 101 is red" }],
+        ["rin.occasion.ended", { occasion: occ, from: rin }],
+        ["rin.attention.dropped", { item, occasion: occ }],
+      ),
+    );
+    expect(state.items.get(item)?.status).toBe("dropped");
   });
 });
 
@@ -145,8 +170,38 @@ describe("raising something again", () => {
   );
 
   test("saying again what was said now is refused: it is insisting", () => {
-    expect(nowRefusal(said, ci)).toContain("insist");
-    expect(nowRefusal(foldAttention([]), ci)).toBeUndefined();
+    expect(repeatRefusal(said, ci)).toContain("insist");
+    expect(repeatRefusal(foldAttention([]), ci)).toBeUndefined();
+  });
+
+  const held = ["rin.attention.held", { item, subject: ci, text: "PR 101 is red", until: "contact", why: "next-contact" }] as [string, unknown];
+
+  test("what only waits was not told yet: a new decision takes its place, and there is nothing to insist on", () => {
+    const waiting = foldAttention(rows(held));
+    expect(repeatRefusal(waiting, ci)).toBeUndefined();
+    expect(pendingAbout(waiting, ci)?.item).toBe(item);
+    const rule = "rule-00000000c1";
+    expect(insistRefusal(waiting, ci, rule, new Set([rule]))).toContain("not told");
+  });
+
+  test("what was brought up, or is on its way, counts as told, also after he waved it away", () => {
+    const rule = "rule-00000000c1";
+    const brought = foldAttention(rows(held, ["rin.attention.brought", { items: [item], contact: { kind: "message", message: "msg-000001" } }]));
+    expect(repeatRefusal(brought, ci)).toContain("insist");
+    expect(insistRefusal(brought, ci, rule, new Set([rule]))).toBeUndefined();
+    expect(pendingAbout(brought, ci)).toBeUndefined();
+    const dismissed = foldAttention(rows(held, ["rin.attention.brought", { items: [item], contact: { kind: "message", message: "msg-000001" } }], ["rin.attention.dismissed", { item }]));
+    expect(repeatRefusal(dismissed, ci)).toContain("insist");
+    const sending = foldAttention(rows(["rin.attention.sending", { item, subject: ci, text: "PR 101 is red" }]));
+    expect(repeatRefusal(sending, ci)).toContain("insist");
+    const unsure = foldAttention(rows(["rin.attention.sending", { item, subject: ci, text: "x" }], ["rin.attention.unsure", { item, subject: ci, text: "x", why: "cut off" }]));
+    expect(unsure.items.get(item)?.status).toBe("unsure");
+    expect(repeatRefusal(unsure, ci)).toContain("insist");
+  });
+
+  test("what was not sent is not told: held again, it can be said", () => {
+    const back = foldAttention(rows(["rin.attention.sending", { item, subject: ci, text: "x" }], held));
+    expect(repeatRefusal(back, ci)).toBeUndefined();
   });
 
   test("insisting needs a confirmed rule of the charter and something told before", () => {

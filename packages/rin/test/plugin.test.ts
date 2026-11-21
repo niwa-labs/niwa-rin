@@ -4,7 +4,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { OptionIdSchema, action, actionRef, grant, principalOf } from "@niwa-labs/core";
+import { NotSent, OptionIdSchema, action, actionRef, grant, principalOf } from "@niwa-labs/core";
 import type { Address, Caller, StoredRecord } from "@niwa-labs/core";
 import { AGENT, plugin, pluginName } from "@niwa-labs/plugin";
 import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
@@ -89,7 +89,8 @@ interface World {
   readonly runs: (type: string, data: unknown, as?: NiwaApi) => Promise<string>;
   /** The fact Rin was last told that names an occasion, and the occasion. */
   readonly lastOccasion: () => string;
-  readonly failSay: { on: boolean };
+  /** `on`: the send fails; `unsure`: it fails in a way that may have sent it, not as `NotSent`. */
+  readonly failSay: { on: boolean; unsure: boolean };
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -105,7 +106,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
   cleanups.push(() => host.close());
   const told: string[] = [];
   const sent: string[] = [];
-  const failSay = { on: false };
+  const failSay = { on: false, unsure: false };
   const offered = { agents: [] as AgentOffer[], briefing: [] as string[], prompt: [] as Array<{ id: string; agent?: string; action: string }> };
   const agentsStub = writer("agents", AGENT_TYPES, (api) => {
     api.action(
@@ -137,7 +138,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
         effect: "write",
         world: "local",
         run: async (input) => {
-          if (failSay.on) throw new Error("telegram is down");
+          if (failSay.on) throw failSay.unsure ? new Error("the connection was cut") : new NotSent("telegram is down");
           sent.push(input.text);
           return { messageId: sent.length };
         },
@@ -296,6 +297,74 @@ test("what cannot reach him now waits for his next contact, and she is told", as
   await toldCount(w, 2);
   expect(w.told[1]).toContain("did not reach him");
   expect((await w.owner.call(rinAttention, { status: "held" })).items).toMatchObject([{ text: "Main is red", why: "undelivered" }]);
+});
+
+test("what may have reached him is not sent again and does not wait for his next contact", async () => {
+  const w = await world();
+  w.failSay.on = true;
+  w.failSay.unsure = true;
+  await w.lead.call(rinNotice, { key: "x:1", kind: "ci", text: "red" });
+  await toldCount(w, 1);
+  const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  await w.rin.call(rinAttend, { subject, decision: "now", text: "Main is red" });
+  await toldCount(w, 2);
+  expect(w.told[1]).toContain("may or may not have reached him");
+  expect((await w.owner.call(rinAttention, {})).items).toMatchObject([{ text: "Main is red", status: "unsure" }]);
+  expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toBe("");
+  // It counts as told: saying it again is insisting.
+  await expect(w.rin.call(rinAttend, { subject, decision: "now", text: "Main is red" })).rejects.toThrow("insist");
+});
+
+test("what did not reach him because its occasion ended meanwhile is dropped, not held for his next contact", async () => {
+  const w = await world();
+  w.failSay.on = true;
+  await w.lead.call(rinNotice, { key: "x:2", kind: "ci", text: "red" });
+  await toldCount(w, 1);
+  const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  // The send fails slowly: the occasion ends before the failure is settled.
+  await w.rin.call(rinAttend, { subject, decision: "now", text: "Main is red" });
+  await w.lead.call(rinNotice, { key: "x:2", kind: "ci", text: "green", ends: true });
+  await Bun.sleep(100);
+  expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toBe("");
+  const items = (await w.owner.call(rinAttention, {})).items;
+  expect(items.map((one) => one.status)).not.toContain("held");
+});
+
+test("a decision about an occasion that ended is refused", async () => {
+  const w = await world();
+  await w.lead.call(rinNotice, { key: "ci:late", kind: "ci", text: "Main is red" });
+  await toldCount(w, 1);
+  const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  await w.lead.call(rinNotice, { key: "ci:late", kind: "ci", text: "Main is green", ends: true });
+  await expect(w.rin.call(rinAttend, { subject, decision: "next-contact", text: "Main was red" })).rejects.toThrow("no such occasion");
+});
+
+test("two decisions to tell him one thing are one message, and a thing already told is raised again only by insisting", async () => {
+  const night = new Date(2026, 10, 20, 23, 30).getTime();
+  const w = await world({}, night);
+  await w.lead.call(rinNotice, { key: "deploy:2", kind: "deploy", text: "The deploy failed" });
+  await toldCount(w, 1);
+  const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  const first = await w.rin.call(rinAttend, { subject, decision: "now", text: "The deploy failed" });
+  const second = await w.rin.call(rinAttend, { subject, decision: "now", text: "The deploy failed at 23:30, twice" });
+  expect(second.item).toBe(first.item);
+  expect((await w.owner.call(rinAttention, {})).items).toMatchObject([{ text: "The deploy failed at 23:30, twice", status: "held" }]);
+  await w.clock.advance(9 * HOUR);
+  await eventually(() => w.sent.length >= 1);
+  await Bun.sleep(50);
+  expect(w.sent).toEqual(["The deploy failed at 23:30, twice"]);
+
+  // A held thing is not told yet, so there is nothing to insist on; a told one cannot be said again or held again.
+  await w.lead.call(rinNotice, { key: "deploy:3", kind: "deploy", text: "Another deploy failed" });
+  await toldCount(w, 2);
+  const other = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  await w.rin.call(rinAttend, { subject: other, decision: "next-contact", text: "Another deploy failed" });
+  const rule = (await w.owner.call(rinCharterPropose, { about: "attention.deploy", text: "Raise a failed deploy again after a day" })).rule;
+  await expect(w.rin.call(rinAttend, { subject: other, decision: "insist", text: "again", rule })).rejects.toThrow("not told");
+  await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "morning" } });
+  await eventually(async () => (await w.records("rin.attention.brought")).length === 1);
+  await expect(w.rin.call(rinAttend, { subject: other, decision: "now", text: "again" })).rejects.toThrow("insist");
+  await expect(w.rin.call(rinAttend, { subject: other, decision: "next-contact", text: "again" })).rejects.toThrow("insist");
 });
 
 test("an occasion that ends drops what waited about it", async () => {

@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 
-export const ItemStatus = z.enum(["held", "sending", "said", "brought", "dropped", "dismissed"]);
+export const ItemStatus = z.enum(["held", "sending", "unsure", "said", "brought", "dropped", "dismissed"]);
 
 export const AttentionView = z.object({
   item: z.string(),

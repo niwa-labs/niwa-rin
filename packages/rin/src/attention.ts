@@ -16,6 +16,7 @@ import {
   AttentionHeld,
   AttentionSaid,
   AttentionSending,
+  AttentionUnsure,
   OccasionEnded,
   OccasionOpened,
   OccasionRepeated,
@@ -143,6 +144,8 @@ export interface Item {
   readonly subject: Subject;
   readonly text: string;
   status: ItemStatus;
+  /** Whether it reached him, or may have: it was sent, said or brought up. Stays true when he waves it away. */
+  presented: boolean;
   until?: "contact" | "quiet-end";
   why?: HoldReason;
   readonly rule?: RuleId;
@@ -161,6 +164,12 @@ export interface AttentionState {
   readonly said: number[];
   /** The latest attach of a session to Rin: what its briefing showed is what it brought. */
   lastAttach?: { readonly session: string; readonly seq: number };
+}
+
+/** What waited, or was on its way, is dropped: its occasion no longer holds. */
+function drop(item: Item): void {
+  item.status = "dropped";
+  delete item.until;
 }
 
 /** The agent whose attachments are contacts with the owner. */
@@ -192,6 +201,10 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
         if (occasion !== undefined) {
           occasion.ended = row.at;
           if (state.open.get(occasion.key) === occasion.occasion) state.open.delete(occasion.key);
+          // What waited about it does not wait any more: the end record is enough, whatever else was written after it.
+          for (const item of state.items.values()) {
+            if (item.status === "held" && item.subject.kind === "occasion" && item.subject.occasion === occasion.occasion) drop(item);
+          }
         }
         break;
       }
@@ -205,17 +218,22 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
       }
       case AttentionHeld.name: {
         const data = AttentionHeld.schema.parse(row.data);
-        state.items.set(data.item, {
+        const before = state.items.get(data.item);
+        const held: Item = {
           item: data.item,
           subject: data.subject,
           text: data.text,
           status: "held",
+          presented: false,
           until: data.until,
           why: data.why,
           ...(data.rule === undefined ? {} : { rule: data.rule }),
-          at: state.items.get(data.item)?.at ?? row.at,
+          at: before?.at ?? row.at,
           seq: row.seq,
-        });
+        };
+        state.items.set(data.item, held);
+        // Held for an occasion that no longer holds: nothing waits.
+        if (data.subject.kind === "occasion" && state.occasions.get(data.subject.occasion)?.ended !== undefined) drop(held);
         break;
       }
       case AttentionSending.name: {
@@ -226,11 +244,27 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
           subject: data.subject,
           text: data.text,
           status: "sending",
+          presented: true,
           ...(data.rule === undefined ? {} : { rule: data.rule }),
           at: held?.at ?? row.at,
           seq: row.seq,
         });
         state.said.push(row.at);
+        break;
+      }
+      case AttentionUnsure.name: {
+        const data = AttentionUnsure.schema.parse(row.data);
+        const sent = state.items.get(data.item);
+        state.items.set(data.item, {
+          item: data.item,
+          subject: data.subject,
+          text: data.text,
+          status: "unsure",
+          presented: true,
+          ...(data.rule === undefined ? {} : { rule: data.rule }),
+          at: sent?.at ?? row.at,
+          seq: sent?.seq ?? row.seq,
+        });
         break;
       }
       case AttentionSaid.name: {
@@ -241,6 +275,7 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
           subject: data.subject,
           text: data.text,
           status: "said",
+          presented: true,
           ...(data.rule === undefined ? {} : { rule: data.rule }),
           at: sent?.at ?? row.at,
           seq: sent?.seq ?? row.seq,
@@ -254,6 +289,7 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
           const item = state.items.get(id);
           if (item?.status !== "held") continue;
           item.status = "brought";
+          item.presented = true;
           item.brought = { contact: data.contact, seq: row.seq };
           delete item.until;
         }
@@ -261,10 +297,7 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
       }
       case AttentionDropped.name: {
         const item = state.items.get(AttentionDropped.schema.parse(row.data).item);
-        if (item?.status === "held") {
-          item.status = "dropped";
-          delete item.until;
-        }
+        if (item?.status === "held" || item?.status === "sending") drop(item);
         break;
       }
       case AttentionDismissed.name: {
@@ -303,35 +336,36 @@ function same(a: Subject, b: Subject): boolean {
   return a.kind === "occasion" ? b.kind === "occasion" && a.occasion === b.occasion : b.kind === "turn" && a.turn === b.turn;
 }
 
-/** What she told him, or holds for him, about a subject. */
-function toldAbout(state: AttentionState, subject: Subject): Item[] {
-  return [...state.items.values()].filter((item) => same(item.subject, subject) && item.status !== "dropped");
+/** What waits for him about a subject: held, not yet presented. */
+export function pendingAbout(state: AttentionState, subject: Subject): Item | undefined {
+  return [...state.items.values()].find((item) => same(item.subject, subject) && item.status === "held");
 }
 
-/** Why saying now is refused: she already said it, and saying it again is insisting. */
-export function nowRefusal(state: AttentionState, subject: Subject): string | undefined {
-  if (toldAbout(state, subject).some((item) => item.status === "said" || item.status === "sending")) {
-    return "this was already said to the owner: to raise it again, insist by a confirmed rule of the charter";
-  }
+/** Has something about the subject reached him, or may have: sent, said, brought up (waved away or not). */
+function presentedAbout(state: AttentionState, subject: Subject): boolean {
+  return [...state.items.values()].some((item) => same(item.subject, subject) && item.presented);
+}
+
+/**
+ * Why telling him about a subject is refused: it was already told, and telling it again is insisting. What only
+ * waits is not told yet, and a new decision about it takes the place of the one that waits.
+ */
+export function repeatRefusal(state: AttentionState, subject: Subject): string | undefined {
+  if (presentedAbout(state, subject)) return "this was already told to the owner: to raise it again, insist by a confirmed rule of the charter";
   return undefined;
 }
 
-/** Why insisting is refused: it names no confirmed rule, or there is nothing told before to raise again. */
+/** Why insisting is refused: it names no confirmed rule, or nothing was presented to him before to raise again. */
 export function insistRefusal(state: AttentionState, subject: Subject, rule: RuleId | undefined, ruled: ReadonlySet<string>): string | undefined {
   if (rule === undefined) return "insisting names the rule of the charter it rests on";
   if (!ruled.has(rule)) return `"${rule}" is not a confirmed rule of the charter`;
-  if (toldAbout(state, subject).length === 0) return "the owner was not told this before: say it, do not insist";
+  if (!presentedAbout(state, subject)) return "the owner was not told this before: say it, do not insist";
   return undefined;
 }
 
 /** What waits: held, for the next contact or the end of his quiet hours. */
 export function heldItems(state: AttentionState, until?: "contact" | "quiet-end"): Item[] {
   return [...state.items.values()].filter((item) => item.status === "held" && (until === undefined || item.until === until));
-}
-
-/** What waits about an occasion. */
-export function heldAbout(state: AttentionState, occasion: OccasionId): Item[] {
-  return heldItems(state).filter((item) => item.subject.kind === "occasion" && item.subject.occasion === occasion);
 }
 
 /** How often the occasion of an item came up, when it is about one. */

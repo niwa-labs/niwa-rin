@@ -43,14 +43,14 @@ import {
   briefingText,
   ceilingLeft,
   foldAttention,
-  heldAbout,
   heldItems,
   inQuietHours,
   insistRefusal,
   itemView,
   noticeOf,
-  nowRefusal,
   openOccasions,
+  pendingAbout,
+  repeatRefusal,
   quietEnds,
   routeOf,
   sayNow,
@@ -70,6 +70,7 @@ import {
   AttentionHeld,
   AttentionSaid,
   AttentionSending,
+  AttentionUnsure,
   CharterDeclined,
   CharterDue,
   CharterProposed,
@@ -145,7 +146,7 @@ function firstLine(text: string, max = 160): string {
 }
 
 /** The record types her attention is folded from. */
-const ATTENTION_TYPES = [OccasionOpened, OccasionRepeated, OccasionEnded, AttentionDecided, AttentionHeld, AttentionSending, AttentionSaid, AttentionBrought, AttentionDropped, AttentionDismissed].map((type) => type.name as string);
+const ATTENTION_TYPES = [OccasionOpened, OccasionRepeated, OccasionEnded, AttentionDecided, AttentionHeld, AttentionSending, AttentionSaid, AttentionUnsure, AttentionBrought, AttentionDropped, AttentionDismissed].map((type) => type.name as string);
 const CHARTER_TYPES = [Corrected, CharterDue, CharterProposed, CharterRuled, CharterDeclined, CharterRetired].map((type) => type.name as string);
 
 /** The choices of a question to the owner that only his yes settles. */
@@ -297,8 +298,8 @@ export function rinPlugin(options: RinOptions): Plugin {
             await emit(OccasionRepeated, { occasion: found.occasion, text: input.text, from });
             return { occasion: found.occasion, status: "repeated" };
           case "end":
+            // The end record alone drops what waited about the occasion: nothing is left to finish after a restart.
             await emit(OccasionEnded, { occasion: found.occasion, text: input.text, from });
-            for (const item of heldAbout(state, found.occasion)) await emit(AttentionDropped, { item: item.item, occasion: found.occasion });
             return { occasion: found.occasion, status: "ended" };
           case "none":
             return { status: "none" };
@@ -354,9 +355,12 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // ---- her decisions --------------------------------------------------------------------------------------
 
-    /** Is the subject one she can decide about: an occasion of hers, or a turn of her inbox? */
+    /** Is the subject one she can decide about: an occasion of hers that still holds, or a turn of her inbox? */
     const known = (subject: Subject, state: AttentionState): boolean => {
-      if (subject.kind === "occasion") return state.occasions.has(subject.occasion);
+      if (subject.kind === "occasion") {
+        const occasion = state.occasions.get(subject.occasion);
+        return occasion !== undefined && state.open.get(occasion.key) === occasion.occasion;
+      }
       return (journal()?.since(seq(0), [AgentTurnQueued.name]) ?? []).some((stored) => {
         const turn = stored.data as { agent?: unknown; turn?: unknown };
         return turn.agent === RIN_AGENT && turn.turn === subject.turn;
@@ -373,11 +377,11 @@ export function rinPlugin(options: RinOptions): Plugin {
           serially(async () => {
             if (whoIs(ctx.caller) !== "rin") throw new RinRefusal("not-rin", "only Rin decides what to do about what reaches her");
             const state = attention();
-            if (!known(input.subject, state)) throw new RinRefusal("unknown", "there is no such occasion or turn of hers");
+            if (!known(input.subject, state)) throw new RinRefusal("unknown", "there is no such occasion that holds, or turn of hers");
             const telling = input.decision === "next-contact" || input.decision === "now" || input.decision === "insist";
             if (telling && input.text === undefined) throw new RinRefusal("no-text", `"${input.decision}" needs the text the owner is to read`);
-            if (input.decision === "now") {
-              const refused = nowRefusal(state, input.subject);
+            if (input.decision === "now" || input.decision === "next-contact") {
+              const refused = repeatRefusal(state, input.subject);
               if (refused !== undefined) throw new RinRefusal("already-said", refused);
             }
             if (input.decision === "insist") {
@@ -392,7 +396,8 @@ export function rinPlugin(options: RinOptions): Plugin {
             });
             const route = routeOf(input.decision, { at: decided.at, quiet, ceiling, said: state.said });
             if (route.kind === "keep" || input.text === undefined) return { decision: input.decision, outcome: "kept" as const };
-            const item = idOf("att", String(ctx.operationId));
+            // A decision about what already waits takes the place of the one that waits: one thing, one message.
+            const item = pendingAbout(state, input.subject)?.item ?? idOf("att", String(ctx.operationId));
             const rule = input.decision === "insist" && input.rule !== undefined ? { rule: input.rule } : {};
             if (route.kind === "say") {
               await ctx.emit(AttentionSending, { item, subject: input.subject, text: input.text, ...rule });
@@ -408,12 +413,27 @@ export function rinPlugin(options: RinOptions): Plugin {
     // the owner waits for his next contact, and she is told.
     api.on(AttentionSending, { id: "say" }, async (data, step) => {
       const sent = await step.outcome<{ text: string }, unknown>(say, { text: data.text }, { key: "say" });
+      const rule = data.rule === undefined ? {} : { rule: data.rule };
       if (sent.status === "completed") {
-        await step.emit(AttentionSaid, { item: data.item, subject: data.subject, text: data.text, channel: String(say), ...(data.rule === undefined ? {} : { rule: data.rule }) });
+        await step.emit(AttentionSaid, { item: data.item, subject: data.subject, text: data.text, channel: String(say), ...rule });
         return;
       }
+      // Only what surely did not go waits for the next contact; what may have gone is not sent again.
+      const nothingSent = sent.status === "denied" || (sent.status === "failed" && !sent.effectPossible);
       const why = sent.status === "failed" ? sent.error : sent.status === "denied" || sent.status === "cancelled" ? sent.reason : "the outcome is not known";
-      await step.emit(AttentionHeld, { item: data.item, subject: data.subject, text: data.text, until: "contact", why: "undelivered", ...(data.rule === undefined ? {} : { rule: data.rule }) });
+      if (!nothingSent) {
+        await step.emit(AttentionUnsure, { item: data.item, subject: data.subject, text: data.text, why, ...rule });
+        await step(agentNotify, { agent: RIN_AGENT, text: `What you meant to tell the owner now may or may not have reached him (${firstLine(why)}); it is not sent again, and does not wait: ask him if it matters: ${firstLine(data.text)}` });
+        return;
+      }
+      const state = attention();
+      const occasion = data.subject.kind === "occasion" ? state.occasions.get(data.subject.occasion) : undefined;
+      if (occasion !== undefined && state.open.get(occasion.key) !== occasion.occasion) {
+        // Its occasion ended meanwhile: there is nothing left to tell him.
+        await step.emit(AttentionDropped, { item: data.item, occasion: occasion.occasion });
+        return;
+      }
+      await step.emit(AttentionHeld, { item: data.item, subject: data.subject, text: data.text, until: "contact", why: "undelivered", ...rule });
       await step(agentNotify, { agent: RIN_AGENT, text: `What you meant to tell the owner now did not reach him (${firstLine(why)}); it waits for his next contact: ${firstLine(data.text)}` });
     });
 

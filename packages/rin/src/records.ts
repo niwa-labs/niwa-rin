@@ -114,6 +114,12 @@ export const AttentionSending = record(
   z.object({ item: ItemId, subject: Subject, text: Text, rule: RuleId.optional() }),
 );
 
+/** She tried to tell him now and cannot tell whether it reached him: it is not said again, and it does not wait. */
+export const AttentionUnsure = record(
+  "rin.attention.unsure",
+  z.object({ item: ItemId, subject: Subject, text: Text, why: z.string().min(1), rule: RuleId.optional() }),
+);
+
 /** She told him, now, on a channel. */
 export const AttentionSaid = record(
   "rin.attention.said",
@@ -194,6 +200,7 @@ export const RIN_TYPES = [
   AttentionDecided,
   AttentionHeld,
   AttentionSending,
+  AttentionUnsure,
   AttentionSaid,
   AttentionBrought,
   AttentionDropped,
@@ -233,7 +240,7 @@ export const CorrectionItem = z.object({
 export type CorrectionItem = z.output<typeof CorrectionItem>;
 
 /** Where one thing she meant to tell him stands. */
-export const ItemStatus = z.enum(["held", "sending", "said", "brought", "dropped", "dismissed"]);
+export const ItemStatus = z.enum(["held", "sending", "unsure", "said", "brought", "dropped", "dismissed"]);
 export type ItemStatus = z.output<typeof ItemStatus>;
 
 /** One thing she meant to tell him, as it is read. */
