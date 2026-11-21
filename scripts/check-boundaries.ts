@@ -101,7 +101,7 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/tasks": basePlugin({ "@niwa-labs/messages": "*" }),
   "@niwa-labs/timer": basePlugin(),
   "@niwa-labs/git": basePlugin(SCRIPT_TYPES),
-  "@niwa-labs/proc": basePlugin({}, PLUGIN_FLOW),
+  "@niwa-labs/proc": basePlugin({ "@niwa-labs/sandbox": "*" }, PLUGIN_FLOW),
   "@niwa-labs/history": basePlugin({ "@niwa-labs/harness": "*", "@niwa-labs/digest": "*" }, PLUGIN_FLOW),
   "@niwa-labs/sessions": basePlugin({
     "@niwa-labs/history": "*",
