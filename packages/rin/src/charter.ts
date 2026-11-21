@@ -8,7 +8,7 @@
 
 import type { Row } from "./attention.ts";
 import { CharterDeclined, CharterDue, CharterProposed, CharterRetired, CharterRuled, Corrected } from "./records.ts";
-import type { CorrectionId, CorrectionItem, RuleId, RuleItem, Topic } from "./records.ts";
+import type { CorrectionId, CorrectionItem, NoteChange, RuleId, RuleItem, Topic } from "./records.ts";
 
 /** How many corrections about one thing, not yet covered, make a rule due. */
 export const DEFAULT_RULE_AFTER = 2;
@@ -17,6 +17,8 @@ export const DEFAULT_RULE_AFTER = 2;
 export interface Correction extends CorrectionItem {
   readonly seq: number;
   readonly source?: string;
+  /** The note of her memory it is about: its words are read from memory when it is shown. */
+  readonly note?: NoteChange;
 }
 
 /** A rule, from its proposal. */
@@ -47,6 +49,7 @@ export function foldCharter(rows: readonly Row[]): CharterState {
           at: row.at,
           seq: row.seq,
           ...(data.source === undefined ? {} : { source: data.source }),
+          ...(data.note === undefined ? {} : { note: data.note }),
         };
         if (byId.has(correction.correction)) break;
         byId.set(correction.correction, correction);
@@ -114,12 +117,12 @@ export function ruleView(rule: Rule): RuleItem {
   return { rule: rule.rule, about: rule.about, text: rule.text, status: rule.status, corrections: rule.corrections };
 }
 
-/** A correction as it is read. */
-export function correctionView(correction: Correction): CorrectionItem {
+/** A correction as it is read; `what` is the words it is shown with, which for a note of hers are read from memory. */
+export function correctionView(correction: Correction, what: string = correction.what): CorrectionItem {
   return {
     correction: correction.correction,
     about: correction.about,
-    what: correction.what,
+    what,
     by: correction.by,
     at: correction.at,
     ...(correction.rule === undefined ? {} : { rule: correction.rule }),

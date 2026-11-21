@@ -18,6 +18,10 @@ export type OccasionId = z.output<typeof OccasionId>;
 export const ItemId = z.string().regex(/^att-[0-9a-f]{10}$/);
 export type ItemId = z.output<typeof ItemId>;
 
+/** What the owner did to a note of hers: changed its words, took it back, or erased it. */
+export const NoteChange = z.object({ memory: z.string().min(1), note: z.string().min(1), change: z.enum(["corrected", "retracted", "erased"]) });
+export type NoteChange = z.output<typeof NoteChange>;
+
 /** One correction of the owner's. */
 export const CorrectionId = z.string().regex(/^cor-[0-9a-f]{10}$/);
 export type CorrectionId = z.output<typeof CorrectionId>;
@@ -151,6 +155,11 @@ export const Corrected = record(
     by: TurnAuthor,
     /** The record of his that it rests on: his message, or the record of what he did. */
     source: z.string().min(1).optional(),
+    /**
+     * The note of her memory it is about, and what he did to it. The note's words are not copied here: they are
+     * read from memory's records when the correction is shown, and not shown for a note erased since.
+     */
+    note: NoteChange.optional(),
   }),
 );
 

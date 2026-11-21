@@ -58,7 +58,7 @@ import {
 } from "./attention.ts";
 import type { AttentionState, Ceiling, Item, QuietHours, Row } from "./attention.ts";
 import { DEFAULT_RULE_AFTER, charterText, correctionView, dueFor, foldCharter, ruleView, ruledRules } from "./charter.ts";
-import type { CharterState } from "./charter.ts";
+import type { CharterState, Correction } from "./charter.ts";
 import { RIN_AGENT, rinDefinition } from "./character.ts";
 import type { Core } from "./character.ts";
 import { PRESENCE_TYPES, workingNow } from "./presence.ts";
@@ -97,7 +97,7 @@ import {
   rinPromptCharter,
   rinSelfInstall,
 } from "./records.ts";
-import type { Contact, OccasionId, Subject, Topic } from "./records.ts";
+import type { Contact, NoteChange, OccasionId, Subject, Topic } from "./records.ts";
 
 /** What the Rin plugin is made with. */
 export interface RinOptions {
@@ -565,7 +565,7 @@ export function rinPlugin(options: RinOptions): Plugin {
         world: "niwa",
         run: async () => {
           const state = charter();
-          return { rules: [...state.rules.values()].map(ruleView), corrections: state.corrections.map(correctionView) };
+          return { rules: [...state.rules.values()].map(ruleView), corrections: state.corrections.map((one) => correctionView(one, whatOf(one))) };
         },
       }),
     );
@@ -650,36 +650,52 @@ export function rinPlugin(options: RinOptions): Plugin {
     );
 
     /** Write a correction the owner acted out, from the record of what he did. */
-    const actedOut = (step: Step, stored: StoredRecord, about: Topic, what: string) =>
-      step.emit(Corrected, { correction: idOf("cor", String(stored.id)), about, what, by: { kind: "niwa", by: "rin" }, source: String(stored.id) });
+    const actedOut = (step: Step, stored: StoredRecord, about: Topic, what: string, note?: NoteChange) =>
+      step.emit(Corrected, { correction: idOf("cor", String(stored.id)), about, what, by: { kind: "niwa", by: "rin" }, source: String(stored.id), ...(note === undefined ? {} : { note }) });
 
     /** Did Rin write this note of her memory? */
     const herNote = (memory: string, note: string) =>
       memory === RIN_AGENT &&
-      (journal()?.since(seq(0), [NoteWritten.name]) ?? []).some((stored) => {
-        const written = stored.data as { memory?: unknown; note?: unknown; by?: Address | TurnAuthor };
-        return written.memory === memory && written.note === note && written.by?.kind === "agent" && written.by.id === RIN_AGENT;
+      (journal()?.find({ type: NoteWritten.name, field: "note", equals: note }) ?? []).some((stored) => {
+        const written = stored.data as { memory?: unknown; by?: Address | TurnAuthor };
+        return written.memory === memory && written.by?.kind === "agent" && written.by.id === RIN_AGENT;
       });
-    const noteText = (memory: string, note: string): string | undefined => {
-      const written = (journal()?.since(seq(0), [NoteWritten.name]) ?? []).find((stored) => {
-        const data = stored.data as { memory?: unknown; note?: unknown };
-        return data.memory === memory && data.note === note;
-      });
-      return (written?.data as { text?: string } | undefined)?.text;
+
+    /** The words of a note as they stood before a position of the journal: its text when written, or as last corrected. */
+    const noteBefore = (memory: string, note: string, before: number): string | undefined => {
+      const rows = [...(journal()?.find({ type: NoteWritten.name, field: "note", equals: note }) ?? []), ...(journal()?.find({ type: NoteCorrected.name, field: "note", equals: note }) ?? [])]
+        .filter((stored) => stored.seq < before && (stored.data as { memory?: unknown }).memory === memory)
+        .sort((a, b) => a.seq - b.seq);
+      return (rows.at(-1)?.data as { text?: string } | undefined)?.text;
+    };
+    const noteErasedSince = (memory: string, note: string): boolean =>
+      (journal()?.find({ type: NoteErased.name, field: "note", equals: note }) ?? []).some((stored) => (stored.data as { memory?: unknown }).memory === memory);
+
+    /**
+     * What a correction says as it is shown. A correction about a note of hers keeps no words of the note: they are
+     * read from memory's records now, and left out once the note was erased, so erasing it leaves no copy here.
+     */
+    const whatOf = (correction: Correction): string => {
+      const note = correction.note;
+      if (note === undefined || note.change === "erased" || noteErasedSince(note.memory, note.note)) return correction.what;
+      const source = correction.source === undefined ? undefined : journal()?.get(recordId(correction.source));
+      const data = source?.data as { text?: string; reason?: string } | undefined;
+      const was = source === undefined ? undefined : noteBefore(note.memory, note.note, source.seq);
+      if (note.change === "corrected") return data?.text === undefined || was === undefined ? correction.what : `${correction.what}: "${firstLine(was)}" became "${firstLine(data.text)}"`;
+      return `${correction.what}${was === undefined ? "" : `: "${firstLine(was)}"`}${data?.reason === undefined ? "" : `, saying: ${firstLine(data.reason)}`}`;
     };
 
     api.on(NoteCorrected, { id: "note-corrected", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
       if (!herNote(data.memory, data.note)) return;
-      await actedOut(step, stored, "memory", `The owner changed your note "${firstLine(noteText(data.memory, data.note) ?? data.note)}" to "${firstLine(data.text)}"`);
+      await actedOut(step, stored, "memory", "The owner changed a note of yours", { memory: data.memory, note: data.note, change: "corrected" });
     });
     api.on(NoteRetracted, { id: "note-retracted", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
       if (!herNote(data.memory, data.note)) return;
-      const reason = data.reason === undefined ? "" : `: ${data.reason}`;
-      await actedOut(step, stored, "memory", `The owner took back your note "${firstLine(noteText(data.memory, data.note) ?? data.note)}"${reason}`);
+      await actedOut(step, stored, "memory", "The owner took back a note of yours", { memory: data.memory, note: data.note, change: "retracted" });
     });
     api.on(NoteErased, { id: "note-erased", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
       if (!herNote(data.memory, data.note)) return;
-      await actedOut(step, stored, "memory", "The owner erased a note of yours: what it held should not have been kept");
+      await actedOut(step, stored, "memory", "The owner erased a note of yours: what it held should not have been kept", { memory: data.memory, note: data.note, change: "erased" });
     });
 
     api.on(CommitmentCancelled, { id: "commitment-cancelled", filter: { "by.kind": "owner" } }, async (data, step, stored) => {
@@ -726,7 +742,7 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // She is asked for a rule from the record of what is due, so that a restart between the two does not lose the ask.
     api.on(CharterDue, { id: "rule-due" }, async (data, step) => {
-      const lines = charter().corrections.filter((one) => data.corrections.includes(one.correction)).map((one) => `- ${one.correction}: ${one.what}`);
+      const lines = charter().corrections.filter((one) => data.corrections.includes(one.correction)).map((one) => `- ${one.correction}: ${one.what}${one.note === undefined ? "" : " (what he changed is in rin.charter)"}`);
       await step(agentNotify, {
         agent: RIN_AGENT,
         text: [

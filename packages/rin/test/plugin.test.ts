@@ -9,6 +9,7 @@ import type { Address, Caller, StoredRecord } from "@niwa-labs/core";
 import { AGENT, plugin, pluginName } from "@niwa-labs/plugin";
 import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
 import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify } from "@niwa-labs/agent/records";
+import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten } from "@niwa-labs/memory/records";
 import { messageSendRef } from "@niwa-labs/messages/records";
 import { ResolverRegistry, requests } from "@niwa-labs/requests";
 import { requestAnswer, requestAsk, requestCancel, requestOpen } from "@niwa-labs/requests/records";
@@ -87,6 +88,8 @@ interface World {
   /** Write a record of the agents' or the workflow module's, as they would. */
   readonly agents: (type: string, data: unknown) => Promise<string>;
   readonly runs: (type: string, data: unknown, as?: NiwaApi) => Promise<string>;
+  /** Write a record of the memory module, as it would. */
+  readonly memory: (type: string, data: unknown) => Promise<string>;
   /** The fact Rin was last told that names an occasion, and the occasion. */
   readonly lastOccasion: () => string;
   /** `on`: the send fails; `unsure`: it fails in a way that may have sent it, not as `NotSent`. */
@@ -137,6 +140,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     });
   });
   const workflowStub = realWorkflow ? workflow() : writer("workflow", [RunRequested, RunStarted, RunFinished]);
+  const memoryStub = writer("memory", [NoteWritten, NoteCorrected, NoteRetracted, NoteErased]);
   const telegram = plugin("telegram", (api) => {
     api.action(
       action("telegram.send", {
@@ -160,6 +164,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     timers([]),
     agentsStub,
     workflowStub,
+    memoryStub,
     telegram,
     rinPlugin({ bind, harness: "claude", quietHours: { from: "23:00", to: "08:00" }, ...options }),
   );
@@ -187,6 +192,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
     lead,
     records,
     agents: async (type, data) => (await owner.call(writeRef("agents"), { type, data })).id,
+    memory: async (type, data) => (await owner.call(writeRef("memory"), { type, data })).id,
     runs: async (type, data, as = owner) => (await as.call(writeRef("workflow"), { type, data })).id,
     lastOccasion: () => {
       const fact = [...told].reverse().find((text) => text.includes("(occasion occ-"));
@@ -586,6 +592,60 @@ test("what the owner acts out is a correction: a question of hers turned down, s
   const corrections = (await w.owner.call(rinCharter, {})).corrections;
   expect(corrections.map((one) => one.about)).toEqual(["questions", "attention.news"]);
   expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toBe("");
+});
+
+const HER = { kind: "agent" as const, id: "rin" };
+const noteWritten = (note: string, text: string) => ({ memory: "rin", note, text, about: "owner", source: { kind: "inferred" }, by: HER });
+
+test("what the owner did to a note of hers is a correction that reads the note from memory, and shows nothing of an erased one", async () => {
+  const w = await world();
+  await w.memory("memory.note.written", noteWritten("note-aaaaaaaa", "The owner eats late"));
+  await w.memory("memory.note.corrected", { memory: "rin", note: "note-aaaaaaaa", text: "The owner eats at nine", by: { kind: "owner" } });
+  await w.memory("memory.note.written", noteWritten("note-bbbbbbbb", "The owner dislikes mornings"));
+  await w.memory("memory.note.retracted", { memory: "rin", note: "note-bbbbbbbb", reason: "He likes them", by: { kind: "owner" } });
+  await eventually(async () => (await w.records("rin.corrected")).length === 2);
+  const read = async () => (await w.owner.call(rinCharter, {})).corrections.map((one) => one.what);
+  expect(await read()).toEqual([
+    'The owner changed a note of yours: "The owner eats late" became "The owner eats at nine"',
+    'The owner took back a note of yours: "The owner dislikes mornings", saying: He likes them',
+  ]);
+
+  // Erased: what the correction says no longer holds the note's words, though nothing was rewritten.
+  await w.memory("memory.note.erased", { memory: "rin", note: "note-aaaaaaaa", by: { kind: "owner" } });
+  await eventually(async () => (await w.records("rin.corrected")).length === 3);
+  const after = await read();
+  expect(after.join("\n")).not.toContain("eats");
+  expect(after[0]).toBe("The owner changed a note of yours");
+  expect(after[1]).toContain("dislikes mornings");
+  // The records of her own hold no words of the note either.
+  expect(JSON.stringify((await w.records("rin.corrected")).map((row) => row.data))).not.toContain("eats");
+});
+
+test("the ask for a rule holds none of a note's words, which stay in memory and in what rin.charter reads", async () => {
+  const w = await world();
+  await w.memory("memory.note.written", noteWritten("note-aaaaaaaa", "The owner eats late"));
+  await w.memory("memory.note.corrected", { memory: "rin", note: "note-aaaaaaaa", text: "The owner eats at nine", by: { kind: "owner" } });
+  await eventually(async () => (await w.records("rin.corrected")).length === 1);
+  await w.memory("memory.note.corrected", { memory: "rin", note: "note-aaaaaaaa", text: "The owner eats at ten", by: { kind: "owner" } });
+  await eventually(async () => (await w.records("rin.corrected")).length === 2);
+  await toldCount(w, 1);
+  expect(w.told[0]).toContain("corrections about memory repeat");
+  expect(w.told[0]).toContain("rin.charter");
+  expect(w.told[0]).not.toContain("eats");
+  // Her inbox is journaled: the words of a note erased after the ask are not in it.
+  expect(JSON.stringify((await w.records("agent.turn.queued")).map((row) => row.data))).not.toContain("eats");
+  expect((await w.owner.call(rinCharter, {})).corrections.map((one) => one.what).join("\n")).toContain("eats at nine");
+});
+
+test("a long reason for taking a note back does not make the charter unreadable", async () => {
+  const w = await world();
+  await w.memory("memory.note.written", noteWritten("note-cccccccc", "The owner likes jazz"));
+  await w.memory("memory.note.retracted", { memory: "rin", note: "note-cccccccc", reason: "x".repeat(2100), by: { kind: "owner" } });
+  await eventually(async () => (await w.records("rin.corrected")).length === 1);
+  const { corrections } = await w.owner.call(rinCharter, {});
+  expect(corrections).toHaveLength(1);
+  expect(corrections[0]!.what.length).toBeLessThanOrEqual(2000);
+  expect(corrections[0]!.what).toContain("The owner likes jazz");
 });
 
 test("notices and decisions that arrive at once are taken one after the other", async () => {
