@@ -234,34 +234,45 @@ export function rinPlugin(options: RinOptions): Plugin {
       return lines.join("\n");
     };
 
+    // What reads her attention and writes on it runs one at a time: two notices of one key that arrive at once are
+    // one occasion and a repeat, and two decisions to say one thing now are one said and one refused. The host is the
+    // journal's one writer, so this process is the only place they can meet.
+    let tail: Promise<unknown> = Promise.resolve();
+    const serially = <T>(work: () => Promise<T>): Promise<T> => {
+      const run = tail.then(work, work);
+      tail = run.catch(() => undefined);
+      return run;
+    };
+
     // ---- occasions -----------------------------------------------------------------------------------------
 
     /** Write a notice: open an occasion, count a repeat, or end one and drop what waits about it. */
-    const notice = async (
+    const notice = (
       emit: <T>(type: RecordType<T>, data: T) => Promise<StoredRecord>,
       input: { key: string; kind: string; text: string; ends?: boolean },
       from: TurnAuthor,
       seed: string,
-    ): Promise<{ occasion?: OccasionId; status: "opened" | "repeated" | "ended" | "none" }> => {
-      const state = attention();
-      const found = noticeOf(state, input);
-      switch (found.kind) {
-        case "open": {
-          const occasion = idOf("occ", seed);
-          await emit(OccasionOpened, { occasion, key: input.key, kind: input.kind, text: input.text, from });
-          return { occasion, status: "opened" };
+    ): Promise<{ occasion?: OccasionId; status: "opened" | "repeated" | "ended" | "none" }> =>
+      serially(async () => {
+        const state = attention();
+        const found = noticeOf(state, input);
+        switch (found.kind) {
+          case "open": {
+            const occasion = idOf("occ", seed);
+            await emit(OccasionOpened, { occasion, key: input.key, kind: input.kind, text: input.text, from });
+            return { occasion, status: "opened" };
+          }
+          case "repeat":
+            await emit(OccasionRepeated, { occasion: found.occasion, text: input.text, from });
+            return { occasion: found.occasion, status: "repeated" };
+          case "end":
+            await emit(OccasionEnded, { occasion: found.occasion, text: input.text, from });
+            for (const item of heldAbout(state, found.occasion)) await emit(AttentionDropped, { item: item.item, occasion: found.occasion });
+            return { occasion: found.occasion, status: "ended" };
+          case "none":
+            return { status: "none" };
         }
-        case "repeat":
-          await emit(OccasionRepeated, { occasion: found.occasion, text: input.text, from });
-          return { occasion: found.occasion, status: "repeated" };
-        case "end":
-          await emit(OccasionEnded, { occasion: found.occasion, text: input.text, from });
-          for (const item of heldAbout(state, found.occasion)) await emit(AttentionDropped, { item: item.item, occasion: found.occasion });
-          return { occasion: found.occasion, status: "ended" };
-        case "none":
-          return { status: "none" };
-      }
-    };
+      });
 
     api.action(
       action(rinNotice, {
@@ -327,37 +338,38 @@ export function rinPlugin(options: RinOptions): Plugin {
         recovery: "repeat",
         effect: "record",
         world: "niwa",
-        run: async (input, ctx) => {
-          if (whoIs(ctx.caller) !== "rin") throw new RinRefusal("not-rin", "only Rin decides what to do about what reaches her");
-          const state = attention();
-          if (!known(input.subject, state)) throw new RinRefusal("unknown", "there is no such occasion or turn of hers");
-          const telling = input.decision === "next-contact" || input.decision === "now" || input.decision === "insist";
-          if (telling && input.text === undefined) throw new RinRefusal("no-text", `"${input.decision}" needs the text the owner is to read`);
-          if (input.decision === "now") {
-            const refused = nowRefusal(state, input.subject);
-            if (refused !== undefined) throw new RinRefusal("already-said", refused);
-          }
-          if (input.decision === "insist") {
-            const refused = insistRefusal(state, input.subject, input.rule, ruledIds());
-            if (refused !== undefined) throw new RinRefusal("insist", refused);
-          }
-          const decided = await ctx.emit(AttentionDecided, {
-            subject: input.subject,
-            decision: input.decision,
-            ...(input.text === undefined ? {} : { text: input.text }),
-            ...(input.rule === undefined ? {} : { rule: input.rule }),
-          });
-          const route = routeOf(input.decision, { at: decided.at, quiet, ceiling, said: state.said });
-          if (route.kind === "keep" || input.text === undefined) return { decision: input.decision, outcome: "kept" as const };
-          const item = idOf("att", String(ctx.operationId));
-          const rule = input.decision === "insist" && input.rule !== undefined ? { rule: input.rule } : {};
-          if (route.kind === "say") {
-            await ctx.emit(AttentionSending, { item, subject: input.subject, text: input.text, ...rule });
-            return { decision: input.decision, outcome: "sending" as const, item };
-          }
-          await ctx.emit(AttentionHeld, { item, subject: input.subject, text: input.text, until: route.until, why: route.why, ...rule });
-          return { decision: input.decision, outcome: "held" as const, item, why: route.why, ...(route.until === "quiet-end" ? { until: route.at } : {}) };
-        },
+        run: (input, ctx) =>
+          serially(async () => {
+            if (whoIs(ctx.caller) !== "rin") throw new RinRefusal("not-rin", "only Rin decides what to do about what reaches her");
+            const state = attention();
+            if (!known(input.subject, state)) throw new RinRefusal("unknown", "there is no such occasion or turn of hers");
+            const telling = input.decision === "next-contact" || input.decision === "now" || input.decision === "insist";
+            if (telling && input.text === undefined) throw new RinRefusal("no-text", `"${input.decision}" needs the text the owner is to read`);
+            if (input.decision === "now") {
+              const refused = nowRefusal(state, input.subject);
+              if (refused !== undefined) throw new RinRefusal("already-said", refused);
+            }
+            if (input.decision === "insist") {
+              const refused = insistRefusal(state, input.subject, input.rule, ruledIds());
+              if (refused !== undefined) throw new RinRefusal("insist", refused);
+            }
+            const decided = await ctx.emit(AttentionDecided, {
+              subject: input.subject,
+              decision: input.decision,
+              ...(input.text === undefined ? {} : { text: input.text }),
+              ...(input.rule === undefined ? {} : { rule: input.rule }),
+            });
+            const route = routeOf(input.decision, { at: decided.at, quiet, ceiling, said: state.said });
+            if (route.kind === "keep" || input.text === undefined) return { decision: input.decision, outcome: "kept" as const };
+            const item = idOf("att", String(ctx.operationId));
+            const rule = input.decision === "insist" && input.rule !== undefined ? { rule: input.rule } : {};
+            if (route.kind === "say") {
+              await ctx.emit(AttentionSending, { item, subject: input.subject, text: input.text, ...rule });
+              return { decision: input.decision, outcome: "sending" as const, item };
+            }
+            await ctx.emit(AttentionHeld, { item, subject: input.subject, text: input.text, until: route.until, why: route.why, ...rule });
+            return { decision: input.decision, outcome: "held" as const, item, why: route.why, ...(route.until === "quiet-end" ? { until: route.at } : {}) };
+          }),
       }),
     );
 
@@ -375,29 +387,32 @@ export function rinPlugin(options: RinOptions): Plugin {
     });
 
     // At the end of his quiet hours what waited for it is said, as far as the ceiling allows.
-    api.on(quietEnd, { id: "quiet-end" }, async (_firing, step, stored) => {
-      const state = attention();
-      const said = [...state.said];
-      for (const item of heldItems(state, "quiet-end")) {
-        const route = sayNow({ at: stored.at, quiet, ceiling, said });
-        const rule = item.rule === undefined ? {} : { rule: item.rule };
-        if (route.kind === "say") {
-          said.push(stored.at);
-          await step.emit(AttentionSending, { item: item.item, subject: item.subject, text: item.text, ...rule }, { key: `send-${item.item}` });
-        } else {
-          await step.emit(AttentionHeld, { item: item.item, subject: item.subject, text: item.text, until: "contact", why: route.kind === "hold" ? route.why : "ceiling", ...rule }, { key: `hold-${item.item}` });
+    api.on(quietEnd, { id: "quiet-end" }, (_firing, step, stored) =>
+      serially(async () => {
+        const state = attention();
+        const said = [...state.said];
+        for (const item of heldItems(state, "quiet-end")) {
+          const route = sayNow({ at: stored.at, quiet, ceiling, said });
+          const rule = item.rule === undefined ? {} : { rule: item.rule };
+          if (route.kind === "say") {
+            said.push(stored.at);
+            await step.emit(AttentionSending, { item: item.item, subject: item.subject, text: item.text, ...rule }, { key: `send-${item.item}` });
+          } else {
+            await step.emit(AttentionHeld, { item: item.item, subject: item.subject, text: item.text, until: "contact", why: route.kind === "hold" ? route.why : "ceiling", ...rule }, { key: `hold-${item.item}` });
+          }
         }
-      }
-    });
+      }),
+    );
 
     // ---- the owner in touch ---------------------------------------------------------------------------------
 
     /** What waits is brought up at a contact: what was held before it. */
-    const bring = async (step: Step, contact: Contact, before: number): Promise<Item[]> => {
-      const items = heldItems(attention()).filter((item) => item.seq < before);
-      if (items.length > 0) await step.emit(AttentionBrought, { items: items.map((item) => item.item), contact });
-      return items;
-    };
+    const bring = (step: Step, contact: Contact, before: number): Promise<Item[]> =>
+      serially(async () => {
+        const items = heldItems(attention()).filter((item) => item.seq < before);
+        if (items.length > 0) await step.emit(AttentionBrought, { items: items.map((item) => item.item), contact });
+        return items;
+      });
 
     for (const source of [OwnerWroteToRin, OwnerWroteInToRin]) {
       api.on(source, { requires: [source.type] }, async (message: Message, step, stored) => {

@@ -419,3 +419,13 @@ test("what the owner acts out is a correction: a question of hers turned down, s
   expect(corrections.map((one) => one.about)).toEqual(["questions", "attention.news"]);
   expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toBe("");
 });
+
+test("notices and decisions that arrive at once are taken one after the other", async () => {
+  const w = await world();
+  const notices = await Promise.all([1, 2, 3].map((n) => w.lead.call(rinNotice, { key: "ci:pr-5", kind: "ci", text: `red ${n}` })));
+  expect(notices.map((one) => one.status).sort()).toEqual(["opened", "repeated", "repeated"]);
+  await toldCount(w, 1);
+  const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
+  const decided = await Promise.allSettled([1, 2].map((n) => w.rin.call(rinAttend, { subject, decision: "now", text: `PR 5 is red (${n})` })));
+  expect(decided.map((one) => one.status).sort()).toEqual(["fulfilled", "rejected"]);
+});
