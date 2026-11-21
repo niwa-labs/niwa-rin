@@ -149,6 +149,32 @@ describe("check-boundaries", () => {
     expect(rules([tasks])).toContain("graph");
   });
 
+  test("lets memory read delegate's records and commitments arm timer's, and nothing more of either", () => {
+    const memory = pkg("@niwa-labs/memory", `import type { ContextRequest } from "@niwa-labs/delegate/records";`, {
+      deps: { "@niwa-labs/delegate": "*" },
+    });
+    expect(rules([memory])).toEqual([]);
+    const commitments = pkg("@niwa-labs/commitments", `import { TimerFired } from "@niwa-labs/timer/records";`, {
+      deps: { "@niwa-labs/timer": "*" },
+    });
+    expect(rules([commitments])).toEqual([]);
+    const root = pkg("@niwa-labs/memory", `import { delegate } from "@niwa-labs/delegate";`, { deps: { "@niwa-labs/delegate": "*" } });
+    expect(rules([root])).toEqual(["graph", "plugin-entry"]);
+  });
+
+  test("lets workflow carry the script libraries and the builders scripts import by name", () => {
+    const deps = {
+      "@niwa-labs/flow": "workspace:*",
+      "@niwa-labs/flow-code": "workspace:*",
+      "@niwa-labs/flow-eval": "workspace:*",
+      "@niwa-labs/tasks": "workspace:*",
+      "@niwa-labs/history": "workspace:*",
+    };
+    const workflow = pkg("@niwa-labs/workflow", "export {};", { deps });
+    const libraries = ["flow", "flow-code", "flow-eval", "tasks", "history"].map((name) => pkg(`@niwa-labs/${name}`, "export {};"));
+    expect(rules([workflow, ...libraries])).toEqual([]);
+  });
+
   test("lets harness kinds use core and sandbox", () => {
     const deps = { "@niwa-labs/core": "*", "@niwa-labs/sandbox": "*", "@niwa-labs/harness": "*" };
     const kind = pkg(

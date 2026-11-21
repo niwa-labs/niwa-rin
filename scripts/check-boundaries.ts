@@ -119,7 +119,14 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
     "@niwa-labs/tasks": "*",
     ...SCRIPT_TYPES,
   }),
+  // The script libraries ship with the workflow module, and a script imports the records and flow entries of tasks and
+  // history by name: a stored or boxed script finds them where it finds niwa's packages.
   "@niwa-labs/workflow": basePlugin({
+    "@niwa-labs/flow": "*",
+    "@niwa-labs/flow-code": "*",
+    "@niwa-labs/flow-eval": "*",
+    "@niwa-labs/tasks": "*",
+    "@niwa-labs/history": "*",
     "@niwa-labs/harness": "*",
     "@niwa-labs/sessions": "*",
     "@niwa-labs/git": "*",
