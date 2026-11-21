@@ -45,7 +45,9 @@ What she needs of the host is not hers to install:
   default, another with `say`.
 
 A host without the timers, the workflow module, the messages or the agents
-module refuses to serve her and says what to install. She works without the
+module refuses to serve her and says what to install. A host that serves no
+action for `say` only logs it at start: a decision to tell him now is then
+refused, naming the action, and holding it for his next contact still works. She works without the
 web surface: the owner reaches her through `niwa agent attach` and the CLI's
 actions (`agent.tell` to `rin`), and she reaches him through `telegram.send`.
 For his Telegram messages to reach her, the host gives the Telegram surface a
@@ -81,12 +83,18 @@ next contact, tell him now, or insist.
   charter. `rin.context` reads the same.
 - What she says now goes out through the action of `say`, called by the
   plugin. During his quiet hours it waits for their end; past the safety
-  ceiling (twelve in any 24 hours by default, `ceiling`) or when it cannot
-  reach him, it waits for his next contact.
+  ceiling (twelve in any 24 hours by default, `ceiling`) or when it surely
+  did not reach him (the action failed saying nothing was sent: `NotSent`), it
+  waits for his next contact. A send that may have gone is not sent again: it
+  is kept as unsure, counts as told, and she is told it may not have reached him.
 - What waits for his next contact is in her briefing, and is brought up when
   he writes to her or attaches a session.
-- Saying again what she already said is insisting, and insisting names a rule
+- What only waits was not told yet: a new decision about it takes the place of
+  the one that waits, so one thing is one message. What was sent or brought
+  up counts as told; saying it again is insisting, and insisting names a rule
   of her charter that the owner confirmed.
+- She decides about a fact that is no occasion by its turn id, which
+  `rin.inbox` lists.
 
 ## Corrections and the charter
 
@@ -121,6 +129,7 @@ installed, and only on his own yes. The answer of a resolver is not his word.
 
 ## Cockpit
 
-`@niwa-labs/rin/cockpit` is her page at `/rin`: writing to her, what she holds
+`@niwa-labs/rin/cockpit` is her page at `/rin`: the conversation with her (his
+messages with where each stands, and what she wrote to him), writing to her, what she holds
 and told, her charter, her promises, the top of her memory and the agents she
 leads; and a home tile with what waits for the owner.

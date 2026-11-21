@@ -70,7 +70,7 @@ function Conversation() {
 
 function Item({ item, owner }: { item: AttentionView; owner: boolean }) {
   const dismiss = useAction(dismissAction);
-  const open = item.status === "held" || item.status === "sending" || item.status === "said" || item.status === "brought";
+  const open = item.status === "held" || item.status === "sending" || item.status === "unsure" || item.status === "said" || item.status === "brought";
   return (
     <li data-slot="rin-attention" data-status={item.status} className="flex min-w-0 items-center gap-3 rounded-lg border bg-card px-3 py-2">
       <div className="flex min-w-0 flex-col">

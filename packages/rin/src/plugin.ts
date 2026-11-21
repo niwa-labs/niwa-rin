@@ -355,8 +355,9 @@ export function rinPlugin(options: RinOptions): Plugin {
     api.on(RunFinished, { id: "run-finished", requires: [RunFinished] }, async (data, step, stored) => {
       const requested = journal()?.find({ type: RunRequested.name, field: "run", equals: data.run })[0];
       if (requested === undefined || whoIs(requested.actor) !== "rin") return;
-      const asked = RunRequested.schema.parse(requested.data);
-      const label = asked.label ?? asked.file;
+      const asked = RunRequested.schema.safeParse(requested.data);
+      if (!asked.success) return;
+      const label = asked.data.label ?? asked.data.file;
       const how = data.outcome.status === "failed" ? `failed: ${firstLine(data.outcome.error.message)}` : data.outcome.status;
       const text = `The workflow run ${data.run}${label === "" ? "" : ` (${label})`} you started ended: ${how}.`;
       await notice((type, value) => step.emit(type, value), { key: `run:${data.run}`, kind: "workflow", text }, { kind: "niwa", by: "workflow" }, String(stored.id));
