@@ -18,10 +18,11 @@
  */
 
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import { OptionIdSchema, action, actionName, agent as agentAddress, owner, recordId, seq } from "@niwa-labs/core";
 import type { Address, Caller, JournalReader, RecordType, Step, StoredRecord } from "@niwa-labs/core";
-import { AGENT, plugin, trigger } from "@niwa-labs/plugin";
+import { AGENT, COCKPIT_MODULE, plugin, trigger } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi } from "@niwa-labs/plugin";
 import { AGENT_BRIEFING, AgentAttached, AgentTurnDelivered, AgentTurnFailed, AgentTurnQueued, agentNotify } from "@niwa-labs/agent/records";
 import type { TurnAuthor } from "@niwa-labs/agent/records";
@@ -178,6 +179,8 @@ export function rinPlugin(options: RinOptions): Plugin {
     api.declare(...RIN_TYPES);
     api.offer(AGENT, definition);
     api.offer(AGENT_BRIEFING, { title: "What Rin holds for you", action: rinBriefing.name });
+    // Her page in the cockpit: a client module, offered by the path of its source.
+    api.offer(COCKPIT_MODULE, { id: "rin", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
 
     const journal = (): JournalReader | undefined => api.journal?.();
     const rowsOf = (types: readonly string[]): Row[] =>

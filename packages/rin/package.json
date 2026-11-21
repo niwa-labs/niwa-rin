@@ -3,10 +3,12 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cockpit": "./src/cockpit/index.tsx"
   },
   "dependencies": {
     "@niwa-labs/agent": "*",
+    "@niwa-labs/cockpit-sdk": "*",
     "@niwa-labs/commitments": "*",
     "@niwa-labs/core": "*",
     "@niwa-labs/delegate": "*",
@@ -17,10 +19,21 @@
     "@niwa-labs/requests": "*",
     "@niwa-labs/script": "*",
     "@niwa-labs/timer": "*",
+    "@niwa-labs/ui-kit": "*",
     "@niwa-labs/workflow": "*",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@niwa-labs/testing": "*"
+    "@niwa-labs/testing": "*",
+    "@tanstack/react-query": "^5.108.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.108.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }
