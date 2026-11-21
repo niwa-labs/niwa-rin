@@ -12,8 +12,8 @@ import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify } from "
 import { messageSendRef } from "@niwa-labs/messages/records";
 import { ResolverRegistry, requests } from "@niwa-labs/requests";
 import { requestAnswer, requestAsk, requestCancel, requestOpen } from "@niwa-labs/requests/records";
-import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
-import { connect, connectAsOwner, createNiwa, eventually, messages, tempHome, testClock, timers } from "@niwa-labs/testing";
+import { RunFinished, RunRequested, RunStarted, workflowStart } from "@niwa-labs/workflow/records";
+import { connect, connectAsOwner, createNiwa, eventually, messages, tempHome, testClock, timers, workflow } from "@niwa-labs/testing";
 import type { NiwaApi, TestClock } from "@niwa-labs/testing";
 
 import { rinPlugin } from "../src/plugin.ts";
@@ -102,7 +102,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry): Promise<World> {
+async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry, realWorkflow = false): Promise<World> {
   const home = await tempHome();
   const clock = testClock(start);
   const host = createNiwa({ home: home.path, clock });
@@ -136,7 +136,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
       return () => {};
     });
   });
-  const workflowStub = writer("workflow", [RunStarted, RunFinished]);
+  const workflowStub = realWorkflow ? workflow() : writer("workflow", [RunRequested, RunStarted, RunFinished]);
   const telegram = plugin("telegram", (api) => {
     api.action(
       action("telegram.send", {
@@ -167,7 +167,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
   const owner = await connectAsOwner(home.path);
   cleanups.push(() => owner.close());
   const session = async (name: string) => {
-    const token = host.issueToken(principalOf("session", name), { grant: grant(["rin.*", "request.ask", "message.send", "workflow.write"]) });
+    const token = host.issueToken(principalOf("session", name), { grant: grant(["rin.*", "request.ask", "message.send", "workflow.*"]) });
     const client = await connect({ home: home.path, id: `session:${name}`, token });
     cleanups.push(() => client.close());
     return client;
@@ -441,8 +441,11 @@ test("a stuck agent is an occasion until a turn reaches it again", async () => {
 
 test("she learns how a workflow run she started ended, and not runs of others", async () => {
   const w = await world();
-  await w.runs("workflow.run.started", { run: "run-00a001", file: "/s/a.ts", args: {}, label: "nightly" }, w.rin);
-  await w.runs("workflow.run.started", { run: "run-00a002", file: "/s/b.ts", args: {} }, w.lead);
+  // The run is asked for by its caller, and the workflow module writes its start.
+  await w.runs("workflow.run.requested", { run: "run-00a001", file: "/s/a.ts", args: {}, label: "nightly" }, w.rin);
+  await w.runs("workflow.run.requested", { run: "run-00a002", file: "/s/b.ts", args: {} }, w.lead);
+  await w.runs("workflow.run.started", { run: "run-00a001", file: "/s/a.ts", args: {}, label: "nightly" });
+  await w.runs("workflow.run.started", { run: "run-00a002", file: "/s/b.ts", args: {} });
   await w.runs("workflow.run.finished", { run: "run-00a002", outcome: { status: "done", result: 1 } });
   await w.runs("workflow.run.finished", { run: "run-00a001", outcome: { status: "done", result: 1 } });
   await toldCount(w, 1);
@@ -450,6 +453,20 @@ test("she learns how a workflow run she started ended, and not runs of others", 
   await Bun.sleep(50);
   expect(w.told).toHaveLength(1);
 });
+
+test("on a real workflow module she learns of the run she started with workflow.start, and not of another caller's", async () => {
+  const w = await world({}, NOON, undefined, true);
+  const script = `${w.home}/quick.ts`;
+  await Bun.write(script, 'export default workflow({ description: "A run that ends at once", output: z.json() }, async () => ({ ok: true }));\n');
+  const hers = await w.rin.call(workflowStart, { file: script });
+  const his = await w.lead.call(workflowStart, { file: script });
+  await eventually(async () => (await w.records("workflow.run.finished")).length === 2, 20_000, "both runs to finish");
+  await toldCount(w, 1);
+  expect(w.told[0]).toContain(`The workflow run ${hers.run}`);
+  await Bun.sleep(100);
+  expect(w.told).toHaveLength(1);
+  expect(w.told.join("\n")).not.toContain(his.run);
+}, 60_000);
 
 test("a correction is the owner's: Rin writes one only from his own words", async () => {
   const w = await world();

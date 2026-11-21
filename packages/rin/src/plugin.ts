@@ -35,7 +35,7 @@ import { MessageReceived, MessageSent } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
 import { timer } from "@niwa-labs/timer";
-import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
+import { RunFinished, RunRequested } from "@niwa-labs/workflow/records";
 
 import {
   DEFAULT_CEILING,
@@ -341,13 +341,13 @@ export function rinPlugin(options: RinOptions): Plugin {
       await notice((type, value) => step.emit(type, value), { key: `agent:${data.agent}:unreachable`, kind: "agent", text, ends: true }, { kind: "niwa", by: "agents" }, String(stored.id));
     });
 
-    // A workflow run she started that finished is an occasion: she learns its outcome without asking.
+    // A workflow run she started that finished is an occasion: she learns its outcome without asking. Who started it
+    // is who asked for it (the record of the request); the run's own start is written by the workflow module.
     api.on(RunFinished, { id: "run-finished", requires: [RunFinished] }, async (data, step, stored) => {
-      const started = journal()
-        ?.since(seq(0), [RunStarted.name])
-        .find((one) => (one.data as { run?: unknown }).run === data.run);
-      if (started === undefined || whoIs(started.actor) !== "rin") return;
-      const label = (started.data as { label?: string; file?: string }).label ?? (started.data as { file?: string }).file ?? "";
+      const requested = journal()?.find({ type: RunRequested.name, field: "run", equals: data.run })[0];
+      if (requested === undefined || whoIs(requested.actor) !== "rin") return;
+      const asked = RunRequested.schema.parse(requested.data);
+      const label = asked.label ?? asked.file;
       const how = data.outcome.status === "failed" ? `failed: ${firstLine(data.outcome.error.message)}` : data.outcome.status;
       const text = `The workflow run ${data.run}${label === "" ? "" : ` (${label})`} you started ended: ${how}.`;
       await notice((type, value) => step.emit(type, value), { key: `run:${data.run}`, kind: "workflow", text }, { kind: "niwa", by: "workflow" }, String(stored.id));
