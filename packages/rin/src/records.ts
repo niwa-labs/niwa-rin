@@ -371,6 +371,24 @@ export const pluginInstall = actionRef("plugin.install", {
   target: (input) => input.plugin,
 });
 
+export const rinInbox = actionRef("rin.inbox", {
+  description:
+    "What reached Rin's inbox, newest first, with the id of each turn: a task's outcome, a promise falling due, the digest of an attached session, a message. `rin.attend` on a turn names it by that id. By default only the turns she has not decided about.",
+  input: z.object({ decided: z.boolean().optional(), limit: z.number().int().positive().max(100).default(20) }),
+  output: z.object({
+    turns: z.array(
+      z.object({
+        turn: TurnId,
+        kind: z.enum(["message", "fact"]),
+        from: TurnAuthor,
+        /** The first lines of what it says. */
+        text: z.string(),
+        decided: z.boolean(),
+      }),
+    ),
+  }),
+});
+
 export const rinBriefing = actionRef("rin.briefing", {
   description: "Rin's section of a briefing: what she held for the owner's next contact, and the rules of her charter that wait for his word.",
   input: z.object({ agent: AgentName }),
@@ -384,4 +402,4 @@ export const rinPromptCharter = actionRef("rin.prompt.charter", {
 });
 
 /** The actions of Rin's attention and charter, for her hands. */
-export const RIN_ACTIONS = [rinNotice, rinAttend, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter, rinSelfInstall] as const;
+export const RIN_ACTIONS = [rinNotice, rinAttend, rinInbox, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter, rinSelfInstall] as const;

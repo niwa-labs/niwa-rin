@@ -29,6 +29,7 @@ import {
   rinContext,
   rinCorrect,
   rinDismiss,
+  rinInbox,
   rinNotice,
   rinSelfInstall,
 } from "../src/records.ts";
@@ -266,6 +267,19 @@ test("the stub model's decisions: silence keeps, the next contact waits for his 
     ["The lead has been stuck for an hour", "said"],
     ["The review is done: two comments", "brought"],
   ]);
+});
+
+test("a fact of her inbox, a task's outcome, can be decided about by the id her inbox read gives", async () => {
+  const w = await world();
+  await w.agents("agent.turn.queued", { agent: "rin", turn: "fact-0a0a0a", kind: "fact", author: { kind: "niwa", by: "tasks" }, text: "Task task-1 is done: two comments\nmore" });
+  await w.agents("agent.turn.queued", { agent: "lead", turn: "fact-0b0b0b", kind: "fact", author: { kind: "niwa", by: "tasks" }, text: "not hers" });
+  const before = await w.rin.call(rinInbox, {});
+  expect(before.turns).toEqual([{ turn: "fact-0a0a0a", kind: "fact", from: { kind: "niwa", by: "tasks" }, text: "Task task-1 is done: two comments", decided: false }]);
+  const held = await w.rin.call(rinAttend, { subject: { kind: "turn", turn: before.turns[0]!.turn }, decision: "next-contact", text: "The review task is done: two comments" });
+  expect(held.outcome).toBe("held");
+  expect((await w.rin.call(rinInbox, {})).turns).toEqual([]);
+  expect((await w.rin.call(rinInbox, { decided: true })).turns).toMatchObject([{ turn: "fact-0a0a0a", decided: true }]);
+  expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toBe("- The review task is done: two comments");
 });
 
 test("only Rin decides, and something already said is raised again only by a rule of her charter", async () => {

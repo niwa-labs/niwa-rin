@@ -93,6 +93,7 @@ import {
   rinContext,
   rinCorrect,
   rinDismiss,
+  rinInbox,
   rinNotice,
   rinPromptCharter,
   rinSelfInstall,
@@ -489,6 +490,25 @@ export function rinPlugin(options: RinOptions): Plugin {
     });
 
     // ---- reading --------------------------------------------------------------------------------------------
+
+    api.action(
+      action(rinInbox, {
+        recovery: "repeat",
+        effect: "read",
+        world: "niwa",
+        run: async (input) => {
+          const decided = new Set((journal()?.since(seq(0), [AttentionDecided.name]) ?? []).flatMap((stored) => {
+            const parsed = AttentionDecided.schema.safeParse(stored.data);
+            return parsed.success && parsed.data.subject.kind === "turn" ? [parsed.data.subject.turn] : [];
+          }));
+          const turns = (journal()?.find({ type: AgentTurnQueued.name, field: "agent", equals: RIN_AGENT }) ?? []).flatMap((stored) => {
+            const turn = AgentTurnQueued.schema.safeParse(stored.data);
+            return turn.success ? [{ turn: turn.data.turn, kind: turn.data.kind, from: turn.data.author, text: firstLine(turn.data.text, 300), decided: decided.has(turn.data.turn) }] : [];
+          });
+          return { turns: turns.filter((one) => input.decided === undefined ? !one.decided : one.decided === input.decided).reverse().slice(0, input.limit) };
+        },
+      }),
+    );
 
     api.action(
       action(rinContext, {
