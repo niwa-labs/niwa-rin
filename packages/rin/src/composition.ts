@@ -8,7 +8,7 @@
  * refuses to serve and says what to install; the binding is an option she cannot do without.
  *
  * ```ts
- * const base = defaultComposition({ home, harnesses, kinds, agents: { default: RIN_AGENT, roles } });
+ * const base = defaultComposition({ home, harnesses, agents: { default: RIN_AGENT, roles } });
  * export default [...base, telegram({ ... }), ...rin({ bind: addressingOf(base), role: "assistant" })];
  * ```
  */
