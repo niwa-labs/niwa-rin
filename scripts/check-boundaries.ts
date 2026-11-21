@@ -216,7 +216,7 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
         "@niwa-labs/delegate": "*",
         "@niwa-labs/history": "*",
         "@niwa-labs/messages": RECORDS,
-        "@niwa-labs/requests": RECORDS,
+        "@niwa-labs/requests": "*",
         "@niwa-labs/workflow": RECORDS,
         "@niwa-labs/timer": "*",
         ...SCRIPT_TYPES,

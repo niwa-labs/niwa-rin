@@ -104,6 +104,12 @@ export const AttentionHeld = record(
   }),
 );
 
+/** She is telling him now: what counts against the safety ceiling, from the moment it was decided. */
+export const AttentionSending = record(
+  "rin.attention.sending",
+  z.object({ item: ItemId, subject: Subject, text: Text, rule: RuleId.optional() }),
+);
+
 /** She told him, now, on a channel. */
 export const AttentionSaid = record(
   "rin.attention.said",
@@ -163,6 +169,7 @@ export const RIN_TYPES = [
   OccasionEnded,
   AttentionDecided,
   AttentionHeld,
+  AttentionSending,
   AttentionSaid,
   AttentionBrought,
   AttentionDropped,
@@ -200,7 +207,7 @@ export const CorrectionItem = z.object({
 export type CorrectionItem = z.output<typeof CorrectionItem>;
 
 /** Where one thing she meant to tell him stands. */
-export const ItemStatus = z.enum(["held", "said", "brought", "dropped", "dismissed"]);
+export const ItemStatus = z.enum(["held", "sending", "said", "brought", "dropped", "dismissed"]);
 export type ItemStatus = z.output<typeof ItemStatus>;
 
 /** One thing she meant to tell him, as it is read. */
@@ -245,7 +252,8 @@ export const rinAttend = actionRef("rin.attend", {
   input: z.object({ subject: Subject, decision: Decision, text: Text.optional(), rule: RuleId.optional() }),
   output: z.object({
     decision: Decision,
-    outcome: z.enum(["kept", "held", "said"]),
+    /** `sending`: it is on its way to him; if it cannot reach him, it is held for his next contact and she is told. */
+    outcome: z.enum(["kept", "held", "sending"]),
     item: ItemId.optional(),
     why: HoldReason.optional(),
     /** When it is held until the end of his quiet hours: that moment. */

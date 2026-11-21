@@ -8,7 +8,18 @@
  * contact is brought up when he is next in touch, unless its occasion stopped holding first.
  */
 
-import { AttentionBrought, AttentionDecided, AttentionDismissed, AttentionDropped, AttentionHeld, AttentionSaid, OccasionEnded, OccasionOpened, OccasionRepeated } from "./records.ts";
+import {
+  AttentionBrought,
+  AttentionDecided,
+  AttentionDismissed,
+  AttentionDropped,
+  AttentionHeld,
+  AttentionSaid,
+  AttentionSending,
+  OccasionEnded,
+  OccasionOpened,
+  OccasionRepeated,
+} from "./records.ts";
 import type { AttentionItem, Contact, Decision, HoldReason, ItemId, ItemStatus, OccasionId, OccasionItem, RuleId, Subject } from "./records.ts";
 
 const MINUTE = 60_000;
@@ -136,6 +147,8 @@ export interface Item {
   why?: HoldReason;
   readonly rule?: RuleId;
   readonly at: number;
+  /** The position of the record that last put it where it is: what waits is held from there. */
+  readonly seq: number;
   brought?: { readonly contact: Contact; readonly seq: number };
 }
 
@@ -200,22 +213,39 @@ export function foldAttention(rows: readonly Row[], agent = "rin"): AttentionSta
           until: data.until,
           why: data.why,
           ...(data.rule === undefined ? {} : { rule: data.rule }),
-          at: row.at,
+          at: state.items.get(data.item)?.at ?? row.at,
+          seq: row.seq,
         });
+        break;
+      }
+      case AttentionSending.name: {
+        const data = AttentionSending.schema.parse(row.data);
+        const held = state.items.get(data.item);
+        state.items.set(data.item, {
+          item: data.item,
+          subject: data.subject,
+          text: data.text,
+          status: "sending",
+          ...(data.rule === undefined ? {} : { rule: data.rule }),
+          at: held?.at ?? row.at,
+          seq: row.seq,
+        });
+        state.said.push(row.at);
         break;
       }
       case AttentionSaid.name: {
         const data = AttentionSaid.schema.parse(row.data);
-        const held = state.items.get(data.item);
+        const sent = state.items.get(data.item);
         state.items.set(data.item, {
           item: data.item,
           subject: data.subject,
           text: data.text,
           status: "said",
           ...(data.rule === undefined ? {} : { rule: data.rule }),
-          at: held?.at ?? row.at,
+          at: sent?.at ?? row.at,
+          seq: sent?.seq ?? row.seq,
         });
-        state.said.push(row.at);
+        if (sent?.status !== "sending") state.said.push(row.at);
         break;
       }
       case AttentionBrought.name: {
@@ -280,7 +310,7 @@ function toldAbout(state: AttentionState, subject: Subject): Item[] {
 
 /** Why saying now is refused: she already said it, and saying it again is insisting. */
 export function nowRefusal(state: AttentionState, subject: Subject): string | undefined {
-  if (toldAbout(state, subject).some((item) => item.status === "said")) {
+  if (toldAbout(state, subject).some((item) => item.status === "said" || item.status === "sending")) {
     return "this was already said to the owner: to raise it again, insist by a confirmed rule of the charter";
   }
   return undefined;
