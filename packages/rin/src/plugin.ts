@@ -23,7 +23,7 @@ import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CORE_TYPES, OptionIdSchema, RecordRefused, action, actionName, agent as agentAddress, owner, recordId, seq } from "@niwa-labs/core";
-import type { Address, Caller, JournalReader, RecordType, Step, StoredRecord } from "@niwa-labs/core";
+import type { Address, Caller, JournalReader, Outcome, RecordType, Step, StoredRecord } from "@niwa-labs/core";
 import { AGENT, COCKPIT_MODULE, plugin, trigger } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi } from "@niwa-labs/plugin";
 import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AgentAttached, AgentTurnDelivered, AgentTurnFailed, AgentTurnQueued, AgentTurnReplied, agentNotify, agentReply, agentTell } from "@niwa-labs/agent/records";
@@ -33,7 +33,7 @@ import { DecisionMade, DecisionRevoked } from "@niwa-labs/delegate/records";
 import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten, memoryConsolidate } from "@niwa-labs/memory/records";
 import { Message as MessageEnvelope, MessageReceived, MessageSent, contentText } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
-import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, operatorAnswered, question, requestAsk } from "@niwa-labs/requests/records";
+import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
 import { timer } from "@niwa-labs/timer";
 import { RunFinished, RunRequested } from "@niwa-labs/workflow/records";
 
@@ -175,8 +175,30 @@ function confirmQuestion(name: string, title: string) {
 /** The question that puts a rule of the charter to the owner. */
 const ruleQuestion = (text: string, about: string) => confirmQuestion("rin.charter.confirm", `Rin proposes a rule for her charter (${about}): ${text}`);
 
-/** How a question that only the owner's yes settles ended. `not-his`: something else than he answered it. */
-type Verdict = "confirmed" | "declined" | "cancelled" | "expired" | "not-his";
+/** How a question that only the owner's yes settles ended. */
+type Verdict = "confirmed" | "declined" | "cancelled" | "expired";
+
+/** Recover this handler's exact install without running module code again. */
+function recordedInstall(log: JournalReader, actor: Extract<Caller, { kind: "handler" }>, input: { plugin: string; module: string; hash: string }): Outcome<unknown> | undefined {
+  const own = (row: StoredRecord) => row.actor.kind === "handler" && row.actor.handler === actor.handler && row.actor.invocation === actor.invocation;
+  const intents = log.find({ type: CORE_TYPES.stepIntent, field: "invocation", equals: actor.invocation });
+  const intent = intents.findLast((row) => own(row) && (row.data as { key: string }).key === "install");
+  if (intent === undefined) return undefined;
+  const call = intent.data as { action: string; operationId: string; input: typeof input };
+  if (call.action !== pluginInstall.name || call.input.plugin !== input.plugin || call.input.module !== input.module || call.input.hash !== input.hash) {
+    return { status: "unknown" };
+  }
+  const receipt = log.get(recordId(`${call.operationId}/installed`));
+  if (receipt?.type === CORE_TYPES.pluginInstalled && own(receipt)) {
+    const saved = receipt.data as typeof input;
+    if (saved.plugin === input.plugin && saved.module === input.module && saved.hash === input.hash) return { status: "completed", value: undefined };
+    return { status: "unknown" };
+  }
+  const ended = log.find({ type: CORE_TYPES.stepOutcome, field: "invocation", equals: actor.invocation })
+    .findLast((row) => own(row) && row.seq > intent.seq && (row.data as { key: string }).key === "install");
+  const result = (ended?.data as { outcome: Outcome<unknown> } | undefined)?.outcome;
+  return result === undefined || result.status === "completed" ? { status: "unknown" } : result;
+}
 
 /** A message the owner wrote to Rin: a contact, and his own words. */
 const ToRin = { "to.kind": "agent", "to.id": RIN_AGENT, "from.kind": "owner" } as const;
@@ -225,15 +247,10 @@ export function rinPlugin(options: RinOptions): Plugin {
     const charter = (): CharterState => foldCharter(rowsOf(CHARTER_TYPES));
     const ruledIds = () => new Set<string>(ruledRules(charter()).map((rule) => rule.rule));
 
-    /**
-     * Put a question to the owner and wait. A yes counts only when the owner gave it: a resolver may answer a
-     * request before it reaches him, and what a resolver recalls is not his word on a rule or on code.
-     */
+    /** Wait for the answer requests accepts through an authenticated owner connection. */
     const askOwner = async (step: Step, asking: ReturnType<typeof confirmQuestion>, key: string): Promise<Verdict> => {
       try {
-        const { id, answer } = answeredBy(await step(requestAsk, { to: owner, answerPolicy: "owner-only", ...asking }, { key }));
-        const answers = journal()?.find({ type: RequestAnswered.name, field: "id", equals: id }) ?? [];
-        if (!answers.some((stored) => operatorAnswered(stored, bind))) return "not-his";
+        const { answer } = answeredBy(await step(requestAsk, { to: owner, answerPolicy: "owner-only", ...asking }, { key }));
         return "ids" in answer && answer.ids[0] === CONFIRM ? "confirmed" : "declined";
       } catch (error) {
         if (error instanceof RequestCancelled) return "cancelled";
@@ -913,7 +930,6 @@ export function rinPlugin(options: RinOptions): Plugin {
         declined: `The owner declined the rule you proposed: ${data.text}`,
         cancelled: `The rule you proposed was not confirmed (the question was cancelled): ${data.text}`,
         expired: `The rule you proposed was not confirmed (the question was left to expire): ${data.text}`,
-        "not-his": `The rule you proposed was not answered by the owner, so it is not part of your charter: ${data.text}`,
       };
       await step(agentNotify, { agent: RIN_AGENT, text: told[verdict] }, { key: "told" });
     });
@@ -943,39 +959,39 @@ export function rinPlugin(options: RinOptions): Plugin {
       }),
     );
 
-    api.on(SelfEditProposed, { id: "confirm-self-edit", concurrency: { by: (data) => data.plugin } }, async (data, step) => {
+    api.on(SelfEditProposed, { id: "confirm-self-edit", concurrency: { by: (data) => data.plugin } }, async (data, step, proposal) => {
       const { edit, plugin: name, module, hash } = data;
-      const priorClaim = journal()?.find({ type: SelfEditClaimed.name, field: "edit", equals: edit })[0];
-      const previous = journal()?.find({ type: SelfEditSettled.name, field: "edit", equals: edit })[0];
+      const log = journal();
+      if (log === undefined) throw new Error("Self-edit recovery needs the host journal");
+      const ownRecord = (row: StoredRecord) => row.cause === proposal.id && row.actor.kind === "handler" && row.actor.handler === "rin/confirm-self-edit";
+      const previous = log.find({ type: SelfEditSettled.name, field: "edit", equals: edit }).find(ownRecord);
       if (previous !== undefined) {
         const saved = SelfEditSettled.schema.parse(previous.data);
         return tellEdit(step, { name, hash, ...saved });
       }
-      const requiresApproval = data.mode === "ask" || selfEdit === "ask";
-      let verdict: Verdict = "confirmed";
-      if (priorClaim === undefined && selfEdit !== "off" && requiresApproval) {
-        const title = `Rin asks to install ${name} from ${module} (sha256 ${hash}): ${data.why}`;
-        verdict = await askOwner(step, confirmQuestion("rin.self-edit.confirm", title), "ask");
-      }
-
-      let detail: string | undefined;
-      let outcome: Exclude<Verdict, "confirmed"> | "installed" | "failed" | "unknown";
-      if (priorClaim === undefined && selfEdit === "off") {
-        outcome = "cancelled";
-        detail = "Self-editing is disabled on this host";
-      } else if (priorClaim === undefined && verdict !== "confirmed") {
-        outcome = verdict;
-      } else {
+      const claim = log.find({ type: SelfEditClaimed.name, field: "edit", equals: edit }).find(ownRecord);
+      let installed = claim?.actor.kind === "handler" ? recordedInstall(log, claim.actor, { plugin: name, module, hash }) : undefined;
+      const settle = async (outcome: Exclude<Verdict, "confirmed"> | "installed" | "failed" | "unknown", detail?: string) => {
+        await step.emit(SelfEditSettled, { edit, plugin: name, outcome, ...(detail === undefined ? {} : { detail }) }, { key: "settled" });
+        await tellEdit(step, { name, hash, outcome, detail });
+      };
+      if (installed === undefined) {
+        if (selfEdit === "off") return settle("cancelled", "Self-editing is disabled on this host");
+        if (data.mode === "ask" || selfEdit === "ask") {
+          const title = `Rin asks to install ${name} from ${module} (sha256 ${hash}): ${data.why}`;
+          const verdict = await askOwner(step, confirmQuestion("rin.self-edit.confirm", title), "ask");
+          if (verdict !== "confirmed") return settle(verdict);
+        }
         await step.emit(SelfEditClaimed, { edit, plugin: name, hash }, { key: "claim" });
-        const installed = await step.outcome(pluginInstall, { plugin: name, module, hash }, { key: "install" });
-        outcome = installed.status === "completed" ? "installed"
-          : installed.status === "unknown" || (installed.status === "failed" && installed.effectPossible) ? "unknown" : "failed";
-        if (installed.status === "failed") detail = installed.error;
-        else if (installed.status === "denied" || installed.status === "cancelled") detail = installed.reason;
-        else if (installed.status === "unknown") detail = "The outcome is not known";
+        installed = await step.outcome(pluginInstall, { plugin: name, module, hash }, { key: "install" });
       }
-      await step.emit(SelfEditSettled, { edit, plugin: name, outcome, ...(detail === undefined ? {} : { detail }) }, { key: "settled" });
-      await tellEdit(step, { name, hash, outcome, detail });
+      switch (installed.status) {
+        case "completed": return settle("installed");
+        case "failed": return settle(installed.effectPossible ? "unknown" : "failed", installed.error);
+        case "denied":
+        case "cancelled": return settle("failed", installed.reason);
+        case "unknown": return settle("unknown", "The outcome is not known");
+      }
     });
 
     async function tellEdit(step: Step, edit: { name: string; hash: string; outcome: string; detail?: string | undefined }) {

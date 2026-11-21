@@ -13,21 +13,22 @@ plugins a host installs after the agents module: a memory, commitments,
 delegate answering for `agent:rin`, and Rin herself.
 
 ```ts
-import { defaultComposition } from "niwa";
+import { defaultComposition, telegram } from "niwa";
 import { RIN_AGENT, addressingOf, rin } from "@niwa-labs/rin";
 
+const surface = telegram({ token, owner, speaksFor: "owner", agent: RIN_AGENT });
 const base = defaultComposition({
   home,
   harnesses,
-  kinds,
+  bind: (fallback) => surface.bind(fallback),
   // Rin is the agent `niwa agent attach` attaches to when it names none.
   agents: { default: RIN_AGENT, roles: { assistant: "claude" } },
 });
 
 export default [
   ...base,
-  telegram({ token, owner, speaksFor, agent: RIN_AGENT }),
-  ...rin({ bind: addressingOf(base), role: "assistant", telegram: true, quietHours: { from: "23:00", to: "08:00" } }),
+  surface,
+  ...rin({ bind: surface.bind(addressingOf(base)), role: "assistant", telegram: true, quietHours: { from: "23:00", to: "08:00" } }),
 ];
 ```
 

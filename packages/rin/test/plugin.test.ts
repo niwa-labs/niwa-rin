@@ -2,9 +2,11 @@
 // through her own actions; the host carries the decisions out.
 
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { cp } from "node:fs/promises";
 import { z } from "zod";
 
-import { NotSent, OptionIdSchema, action, actionRef, grant, principalOf } from "@niwa-labs/core";
+import { CORE_TYPES, JOURNAL_FILE, NotSent, OptionIdSchema, action, actionRef, grant, principalOf } from "@niwa-labs/core";
 import type { Address, Caller, StoredRecord } from "@niwa-labs/core";
 import { AGENT, plugin, pluginName } from "@niwa-labs/plugin";
 import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
@@ -12,7 +14,7 @@ import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify, agentRe
 import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten, memoryConsolidate } from "@niwa-labs/memory/records";
 import { messageSendRef } from "@niwa-labs/messages/records";
 import { ResolverRegistry, requests } from "@niwa-labs/requests";
-import { requestAnswer, requestAsk, requestCancel, requestOpen } from "@niwa-labs/requests/records";
+import { RequestCreated, requestAnswer, requestAsk, requestCancel, requestOpen } from "@niwa-labs/requests/records";
 import { RunFinished, RunRequested, RunStarted, workflowStart } from "@niwa-labs/workflow/records";
 import { connect, connectAsOwner, createNiwa, eventually, messages, tempHome, testClock, timers, workflow } from "@niwa-labs/testing";
 import type { NiwaApi, TestClock } from "@niwa-labs/testing";
@@ -110,8 +112,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry, realWorkflow = false, withTelegram = true): Promise<World> {
+async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry, realWorkflow = false, withTelegram = true, fixture: {
+  prepareHome?: (path: string) => Promise<void>;
+  surface?: Plugin & { bind(fallback: typeof bind): typeof bind };
+} = {}): Promise<World> {
   const home = await tempHome();
+  await fixture.prepareHome?.(home.path);
   const clock = testClock(start);
   const host = createNiwa({ home: home.path, clock });
   cleanups.push(() => home.cleanup());
@@ -176,12 +182,12 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
   });
   host.use(
     messages({ bind }),
-    requests({ bind, ...(resolvers === undefined ? {} : { resolvers }) }),
+    requests({ bind: fixture.surface?.bind(bind) ?? bind, ...(resolvers === undefined ? {} : { resolvers }) }),
     timers([]),
     agentsStub,
     workflowStub,
     memoryStub,
-    ...(withTelegram ? [telegram] : []),
+    ...(withTelegram ? [fixture.surface ?? telegram] : []),
     rinPlugin({ bind, harness: "claude", telegram: withTelegram, quietHours: { from: "23:00", to: "08:00" }, ...options }),
   );
   await host.serve();
@@ -883,6 +889,74 @@ test("free mode records the claim and outcome without a request, and the owner c
   }), { plugin: "rin/extra", hash: proposed.hash });
   expect((await w.owner.call(rinSelfHistory, {})).installed).toEqual([]);
 });
+
+test("charter and install accept the owner confirmed by the requests surface binding", async () => {
+  const surface = plugin("owner-buttons", (api) => {
+    api.on(RequestCreated, { id: "confirm" }, async (request, step) => {
+      if (request.to.kind === "owner" && request.answerPolicy === "owner-only") {
+        await step(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+      }
+    });
+  });
+  const buttonBinding = (fallback: typeof bind): typeof bind => (caller) =>
+    caller.kind === "handler" && caller.handler === "owner-buttons/confirm" ? { kind: "owner" } : fallback(caller);
+  const w = await world({ selfEdit: "ask", telegram: false }, NOON, undefined, false, true, {
+    surface: { ...surface, bind: buttonBinding },
+  });
+  const { rule } = await w.rin.call(rinCharterPropose, { about: "tone", text: "Keep it short" });
+  await eventually(async () => (await w.records("rin.charter.ruled")).length === 1);
+  expect((await w.records("rin.charter.ruled"))[0]?.data).toMatchObject({ rule });
+  const module = await moduleOf(w, "rin/extra", "v1");
+  const proposed = await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
+  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 1);
+  expect((await w.records(CORE_TYPES.pluginInstalled)).map((row) => row.data)).toMatchObject([{ hash: proposed.hash }]);
+  expect((await w.records("request.answered")).map((row) => row.actor)).toMatchObject([
+    { kind: "handler", handler: "owner-buttons/confirm" }, { kind: "handler", handler: "owner-buttons/confirm" },
+  ]);
+});
+
+// Restart from a prefix of a real, successful installation's journal. All retained rows,
+// including invocation and handler identity, were written by the host.
+for (const [boundary, mode, expected] of [
+  ["claim", "off", "cancelled"],
+  ["claim", "ask", "installed"],
+  ["intent", "off", "unknown"],
+  ["receipt", "off", "installed"],
+] as const) {
+  test(`recover a free self-edit at the ${boundary} under ${mode}`, async () => {
+    const first = await world({ selfEdit: "free" });
+    const module = await moduleOf(first, "rin/extra", "v1");
+    const proposed = await first.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
+    await eventually(async () => (await first.records("rin.self-edit.settled")).length === 1);
+    const type = boundary === "claim" ? "rin.self-edit.claimed" : boundary === "receipt" ? CORE_TYPES.pluginInstalled : CORE_TYPES.stepIntent;
+    const checkpoint = (await first.records(type)).find((row) => boundary !== "intent" || (row.data as { action?: string }).action === "plugin.install");
+    if (!checkpoint) throw new Error(`Missing ${boundary} checkpoint`);
+    await first.host.close();
+    const restarted = await world({ selfEdit: mode }, NOON, undefined, false, true, { prepareHome: async (path) => {
+      await cp(first.home, path, { recursive: true });
+      const db = new Database(`${path}/${JOURNAL_FILE}`);
+      try {
+        db.run("DELETE FROM links WHERE from_id IN (SELECT id FROM records WHERE seq > ?)", [checkpoint.seq]);
+        db.run("DELETE FROM records WHERE seq > ?", [checkpoint.seq]);
+      } finally {
+        db.close();
+      }
+    } });
+    if (mode === "ask") {
+      const request = await asked(restarted, 1);
+      expect(request.input.title).toContain(proposed.hash);
+      expect(await restarted.records(CORE_TYPES.pluginInstalled)).toHaveLength(0);
+      await restarted.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+    }
+    await eventually(async () => (await restarted.records("rin.self-edit.settled")).length === 1);
+    expect((await restarted.records("rin.self-edit.settled"))[0]?.data).toMatchObject({ edit: proposed.edit, outcome: expected });
+    expect(await restarted.records("rin.self-edit.claimed")).toHaveLength(1);
+    expect(await restarted.records("request.created")).toHaveLength(mode === "ask" ? 1 : 0);
+    expect(await restarted.records(CORE_TYPES.pluginInstalled)).toHaveLength(expected === "installed" ? 1 : 0);
+    const attempts = (await restarted.records(CORE_TYPES.stepIntent)).filter((row) => (row.data as { action: string }).action === "plugin.install");
+    expect(attempts).toHaveLength(boundary === "claim" && mode === "off" ? 0 : 1);
+  });
+}
 
 test("simultaneous charter proposals admit one rule, and a late approval cannot revive a retired rule", async () => {
   const w = await world();
