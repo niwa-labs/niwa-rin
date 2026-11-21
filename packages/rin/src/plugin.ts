@@ -31,7 +31,7 @@ import type { TurnAuthor } from "@niwa-labs/agent/records";
 import { CommitmentCancelled, CommitmentMade } from "@niwa-labs/commitments/records";
 import { DecisionMade, DecisionRevoked } from "@niwa-labs/delegate/records";
 import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten } from "@niwa-labs/memory/records";
-import { MessageReceived, MessageSent } from "@niwa-labs/messages/records";
+import { Message as MessageEnvelope, MessageReceived, MessageSent } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
 import { timer } from "@niwa-labs/timer";
@@ -572,17 +572,32 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // ---- corrections ----------------------------------------------------------------------------------------
 
+    /** Are these the owner's own words: a message he wrote, or a turn he wrote that holds a message? */
+    const wordsOf = (stored: StoredRecord): boolean => {
+      if (stored.type === MessageSent.name || stored.type === MessageReceived.name) {
+        const message = MessageEnvelope.safeParse(stored.data);
+        return message.success && message.data.from.kind === "owner" && message.data.body.text.trim() !== "";
+      }
+      if (stored.type === AgentTurnQueued.name) {
+        const turn = AgentTurnQueued.schema.safeParse(stored.data);
+        return turn.success && turn.data.kind === "message" && turn.data.author.kind === "owner" && turn.data.text.trim() !== "";
+      }
+      return false;
+    };
     /**
-     * Are these the owner's own words: a message he wrote (by its id or its record's), a turn of his, or a record
-     * his client wrote?
+     * Does this id name a record that holds words the owner wrote: a record of the journal by its id (an emitted
+     * record's id has slashes in it), or a message by its own id (`msg-…`)? A record he merely wrote, an answer or a
+     * correction, holds no words of his to rest a correction on.
      */
     const isHisWords = (id: string): boolean => {
-      const byRecord = /^[A-Za-z0-9_:.-]+$/.test(id) ? journal()?.get(recordId(id)) : undefined;
+      let byRecord: StoredRecord | undefined;
+      try {
+        byRecord = journal()?.get(recordId(id));
+      } catch {
+        byRecord = undefined; // not the shape of a record id
+      }
       const byMessage = (journal()?.since(seq(0), [MessageSent.name, MessageReceived.name]) ?? []).filter((stored) => (stored.data as { id?: unknown }).id === id);
-      return [...(byRecord === undefined ? [] : [byRecord]), ...byMessage].some((stored) => {
-        const data = stored.data as { from?: { kind?: unknown }; author?: { kind?: unknown } };
-        return data.from?.kind === "owner" || data.author?.kind === "owner" || bind(stored.actor)?.kind === "owner";
-      });
+      return [...(byRecord === undefined ? [] : [byRecord]), ...byMessage].some(wordsOf);
     };
 
     api.action(

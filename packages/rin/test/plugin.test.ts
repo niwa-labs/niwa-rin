@@ -480,6 +480,28 @@ test("a correction is the owner's: Rin writes one only from his own words", asyn
   expect(corrections).toMatchObject([{ correction: written.correction, about: "tone", by: { kind: "agent", id: "rin" } }]);
 });
 
+test("her source may be the id of the journal record that holds his words, and nothing that merely carries his name", async () => {
+  const w = await world();
+  const his = await w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text: "too long, keep it to three lines" } });
+  // The id of the record an action emitted holds slashes: it is a record id like any other.
+  const record = (await w.records("message.sent")).find((row) => (row.data as { id?: string }).id === his.id)!;
+  expect(String(record.id)).toContain("/emit/");
+  const viaRecord = await w.rin.call(rinCorrect, { about: "tone", what: "Keep replies to three lines", source: String(record.id) });
+  expect(viaRecord.correction).toMatch(/^cor-/);
+
+  // A turn of his that holds a message counts; one whose author is another agent does not, whoever wrote the record.
+  const turn = await w.agents("agent.turn.queued", { agent: "rin", turn: "msg-aaaaaa", kind: "message", author: { kind: "owner" }, text: "no jokes before ten" });
+  expect((await w.rin.call(rinCorrect, { about: "tone", what: "No jokes before ten", source: turn })).correction).toMatch(/^cor-/);
+  const alien = await w.agents("agent.turn.queued", { agent: "rin", turn: "msg-bbbbbb", kind: "message", author: { kind: "agent", id: "lead" }, text: "he said no jokes" });
+  await expect(w.rin.call(rinCorrect, { about: "tone", what: "No jokes", source: alien })).rejects.toThrow("own words");
+
+  // A record his client wrote that holds no words of his: his own correction, or the answer to a request.
+  const written = await w.owner.call(rinCorrect, { about: "memory", what: "Stop noting what I eat" });
+  const correction = (await w.records("rin.corrected")).find((row) => (row.data as { correction?: string }).correction === written.correction)!;
+  await expect(w.rin.call(rinCorrect, { about: "memory", what: "Stop noting food", source: String(correction.id) })).rejects.toThrow("own words");
+  await expect(w.rin.call(rinCorrect, { about: "memory", what: "Stop noting food", source: "no-such-record/emit/1" })).rejects.toThrow("own words");
+});
+
 test("repeated corrections ask her for a rule, and the owner's yes puts it in her charter", async () => {
   const w = await world();
   const first = await w.owner.call(rinCorrect, { about: "attention.ci", what: "Do not tell me about CI on drafts" });
