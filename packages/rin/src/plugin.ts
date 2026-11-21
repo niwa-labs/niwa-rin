@@ -24,7 +24,7 @@ import { OptionIdSchema, action, actionName, agent as agentAddress, owner, recor
 import type { Address, Caller, JournalReader, RecordType, Step, StoredRecord } from "@niwa-labs/core";
 import { AGENT, COCKPIT_MODULE, plugin, trigger } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi } from "@niwa-labs/plugin";
-import { AGENT_BRIEFING, AgentAttached, AgentTurnDelivered, AgentTurnFailed, AgentTurnQueued, agentNotify } from "@niwa-labs/agent/records";
+import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AgentAttached, AgentTurnDelivered, AgentTurnFailed, AgentTurnQueued, agentNotify } from "@niwa-labs/agent/records";
 import type { TurnAuthor } from "@niwa-labs/agent/records";
 import { CommitmentCancelled, CommitmentMade } from "@niwa-labs/commitments/records";
 import { DecisionMade, DecisionRevoked } from "@niwa-labs/delegate/records";
@@ -88,6 +88,7 @@ import {
   rinCorrect,
   rinDismiss,
   rinNotice,
+  rinPromptCharter,
 } from "./records.ts";
 import type { Contact, OccasionId, Subject, Topic } from "./records.ts";
 
@@ -179,6 +180,8 @@ export function rinPlugin(options: RinOptions): Plugin {
     api.declare(...RIN_TYPES);
     api.offer(AGENT, definition);
     api.offer(AGENT_BRIEFING, { title: "What Rin holds for you", action: rinBriefing.name });
+    // Her charter is part of the prompt of her sessions, read when each one starts: a rule confirmed since reaches the next.
+    api.offer(AGENT_PROMPT_SECTION, { id: "charter", agent: RIN_AGENT, action: rinPromptCharter.name });
     // Her page in the cockpit: a client module, offered by the path of its source.
     api.offer(COCKPIT_MODULE, { id: "rin", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
 
@@ -482,6 +485,19 @@ export function rinPlugin(options: RinOptions): Plugin {
           const waiting = [...charter().rules.values()].filter((rule) => rule.status === "proposed");
           if (waiting.length > 0) sections.push(["Rules of her charter that wait for your word:", ...waiting.map((rule) => `- ${rule.text}`)].join("\n"));
           return { text: sections.join("\n\n") };
+        },
+      }),
+    );
+
+    api.action(
+      action(rinPromptCharter, {
+        recovery: "repeat",
+        effect: "read",
+        world: "niwa",
+        run: async (input) => {
+          if (input.agent !== RIN_AGENT) return { text: "" };
+          const rules = charterText(ruledRules(charter()));
+          return { text: rules === "" ? "Your charter has no rules yet." : `Your charter, the rules the owner confirmed:\n${rules}` };
         },
       }),
     );

@@ -8,7 +8,7 @@ import { action, actionRef, grant, principalOf } from "@niwa-labs/core";
 import type { Address, Caller, StoredRecord } from "@niwa-labs/core";
 import { AGENT, plugin } from "@niwa-labs/plugin";
 import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
-import { AGENT_BRIEFING, AGENT_TYPES, agentNotify } from "@niwa-labs/agent/records";
+import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify } from "@niwa-labs/agent/records";
 import { messageSendRef } from "@niwa-labs/messages/records";
 import { requests } from "@niwa-labs/requests";
 import { requestAnswer, requestAsk, requestCancel } from "@niwa-labs/requests/records";
@@ -24,6 +24,7 @@ import {
   rinBriefing,
   rinCharter,
   rinCharterPropose,
+  rinPromptCharter,
   rinContext,
   rinCorrect,
   rinDismiss,
@@ -75,7 +76,7 @@ interface World {
   readonly told: string[];
   /** What reached the owner now. */
   readonly sent: string[];
-  readonly offered: { agents: AgentOffer[]; briefing: string[] };
+  readonly offered: { agents: AgentOffer[]; briefing: string[]; prompt: Array<{ id: string; agent?: string; action: string }> };
   readonly owner: NiwaApi;
   readonly rin: NiwaApi;
   readonly lead: NiwaApi;
@@ -102,7 +103,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON): Promise<W
   const told: string[] = [];
   const sent: string[] = [];
   const failSay = { on: false };
-  const offered = { agents: [] as AgentOffer[], briefing: [] as string[] };
+  const offered = { agents: [] as AgentOffer[], briefing: [] as string[], prompt: [] as Array<{ id: string; agent?: string; action: string }> };
   const agentsStub = writer("agents", AGENT_TYPES, (api) => {
     api.action(
       action(agentNotify, {
@@ -118,6 +119,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON): Promise<W
     api.service(() => {
       offered.agents.push(...api.offers(AGENT).map((one) => one.value));
       offered.briefing.push(...api.offers(AGENT_BRIEFING).map((one) => one.value.action));
+      offered.prompt.push(...api.offers(AGENT_PROMPT_SECTION).map((one) => one.value));
       return () => {};
     });
   });
@@ -188,6 +190,7 @@ test("Rin is offered to the agents module with a briefing section of her own", a
   const w = await world();
   expect(w.offered.agents.map((one) => one.name)).toEqual(["rin"]);
   expect(w.offered.briefing).toEqual(["rin.briefing"]);
+  expect(w.offered.prompt).toEqual([{ id: "charter", agent: "rin", action: "rin.prompt.charter" }]);
 });
 
 test("an occasion reaches her once while it holds, with what she weighs", async () => {
@@ -383,10 +386,19 @@ test("repeated corrections ask her for a rule, and the owner's yes puts it in he
   await toldCount(w, 2);
   expect(w.told[1]).toContain("The owner confirmed a rule of your charter");
 
+  // The rule is in the section of her prompt, read live, and only hers.
+  expect((await w.owner.call(rinPromptCharter, { agent: "rin" })).text).toContain(`${proposed.rule} (attention.ci): Red CI on a draft PR is not worth telling`);
+  expect((await w.owner.call(rinPromptCharter, { agent: "lead" })).text).toBe("");
+
   // The rule goes with every occasion she is told about.
   await w.lead.call(rinNotice, { key: "ci:pr-3", kind: "ci", text: "CI is red on draft PR 3" });
   await toldCount(w, 3);
   expect(w.told[2]).toContain(`${proposed.rule} (attention.ci): Red CI on a draft PR is not worth telling`);
+});
+
+test("her prompt section says her charter has no rules before the owner confirms one", async () => {
+  const w = await world();
+  expect((await w.owner.call(rinPromptCharter, { agent: "rin" })).text).toBe("Your charter has no rules yet.");
 });
 
 test("a rule the owner declines stays out of the charter", async () => {

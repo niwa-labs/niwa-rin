@@ -8,7 +8,7 @@
 import { z } from "zod";
 
 import { Address, actionRef, record } from "@niwa-labs/core";
-import { AgentName, TurnAuthor, TurnId } from "@niwa-labs/agent/records";
+import { AgentName, PromptSectionInput, PromptSectionOutput, TurnAuthor, TurnId } from "@niwa-labs/agent/records";
 
 /** An occasion: something that happened and may matter to the owner, kept as one while it holds. */
 export const OccasionId = z.string().regex(/^occ-[0-9a-f]{10}$/);
@@ -318,6 +318,12 @@ export const rinBriefing = actionRef("rin.briefing", {
   description: "Rin's section of a briefing: what she held for the owner's next contact, and the rules of her charter that wait for his word.",
   input: z.object({ agent: AgentName }),
   output: z.object({ text: z.string() }),
+});
+
+export const rinPromptCharter = actionRef("rin.prompt.charter", {
+  description: "Rin's charter as a section of the prompt of her sessions: the rules the owner confirmed, as they stand when a session starts.",
+  input: PromptSectionInput,
+  output: PromptSectionOutput,
 });
 
 /** The actions of Rin's attention and charter, for her hands. */
