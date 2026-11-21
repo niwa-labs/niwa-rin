@@ -109,6 +109,26 @@ describe("check-boundaries", () => {
     expect(rules([rin])).toEqual([]);
   });
 
+  test("lets rin read base records, arm a timer and offer a cockpit page", () => {
+    const deps = {
+      "@niwa-labs/messages": "*",
+      "@niwa-labs/workflow": "*",
+      "@niwa-labs/timer": "*",
+      "@niwa-labs/cockpit-sdk": "*",
+    };
+    const source = [
+      `import { MessageSent } from "@niwa-labs/messages/records";`,
+      `import { RunFinished } from "@niwa-labs/workflow/records";`,
+      `import { daily } from "@niwa-labs/timer";`,
+    ].join("\n");
+    const cockpit = { "./cockpit": "./src/cockpit/index.tsx" };
+    const rin = pkg("@niwa-labs/rin", source, { deps, exports: cockpit });
+    rin.files.push({ path: "packages/rin/src/cockpit/page.tsx", source: `import { useCall } from "@niwa-labs/cockpit-sdk";` });
+    expect(rules([rin])).toEqual([]);
+    const root = pkg("@niwa-labs/rin", `import { messages } from "@niwa-labs/messages";`, { deps });
+    expect(rules([root])).toEqual(["graph"]);
+  });
+
   test("lets tasks read message records but not the messages plugin itself", () => {
     const deps = { "@niwa-labs/messages": "workspace:*" };
     const ok = pkg("@niwa-labs/tasks", `import type { Message } from "@niwa-labs/messages/records";`, { deps });

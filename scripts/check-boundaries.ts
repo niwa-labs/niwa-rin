@@ -204,19 +204,29 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
   }),
 
   // Compositions assemble their modules, so they import factories directly.
-  "@niwa-labs/rin": leaf(
-    "composition",
-    {
-      "@niwa-labs/agent": "*",
-      "@niwa-labs/memory": "*",
-      "@niwa-labs/commitments": "*",
-      "@niwa-labs/delegate": "*",
-      "@niwa-labs/history": "*",
-      ...SCRIPT_TYPES,
-      ...ON_HOST,
-    },
-    "rin",
-  ),
+  // Rin also reads the records of the base plugins her attention follows, arms her timer, and offers
+  // her own page to the cockpit.
+  "@niwa-labs/rin": {
+    ...leaf(
+      "composition",
+      {
+        "@niwa-labs/agent": "*",
+        "@niwa-labs/memory": "*",
+        "@niwa-labs/commitments": "*",
+        "@niwa-labs/delegate": "*",
+        "@niwa-labs/history": "*",
+        "@niwa-labs/messages": RECORDS,
+        "@niwa-labs/requests": RECORDS,
+        "@niwa-labs/workflow": RECORDS,
+        "@niwa-labs/timer": "*",
+        ...SCRIPT_TYPES,
+        ...ON_HOST,
+        ...COCKPIT_LIBS,
+      },
+      "rin",
+    ),
+    optionalEntries: [COCKPIT_ENTRY],
+  },
   "@niwa-labs/pstack": leaf(
     "composition",
     {

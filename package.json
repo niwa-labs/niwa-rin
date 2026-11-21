@@ -16,6 +16,8 @@
   },
   "overrides": {
     "@niwa-labs/agent": "link:../niwa/packages/agent",
+    "@niwa-labs/client": "link:../niwa/packages/client",
+    "@niwa-labs/cockpit-sdk": "link:../niwa/packages/cockpit-sdk",
     "@niwa-labs/commitments": "link:../plugins/packages/commitments",
     "@niwa-labs/core": "link:../niwa/packages/core",
     "@niwa-labs/delegate": "link:../plugins/packages/delegate",
@@ -23,6 +25,7 @@
     "@niwa-labs/git": "link:../niwa/packages/git",
     "@niwa-labs/harness": "link:../niwa/packages/harness",
     "@niwa-labs/history": "link:../niwa/packages/history",
+    "@niwa-labs/host": "link:../niwa/packages/host",
     "@niwa-labs/memory": "link:../plugins/packages/memory",
     "@niwa-labs/messages": "link:../niwa/packages/messages",
     "@niwa-labs/plugin": "link:../niwa/packages/plugin",
@@ -31,7 +34,9 @@
     "@niwa-labs/script": "link:../niwa/packages/script",
     "@niwa-labs/sessions": "link:../niwa/packages/sessions",
     "@niwa-labs/tasks": "link:../niwa/packages/tasks",
+    "@niwa-labs/testing": "link:../niwa/packages/testing",
     "@niwa-labs/timer": "link:../niwa/packages/timer",
+    "@niwa-labs/ui-kit": "link:../niwa/packages/ui-kit",
     "@niwa-labs/workflow": "link:../niwa/packages/workflow"
   }
 }
