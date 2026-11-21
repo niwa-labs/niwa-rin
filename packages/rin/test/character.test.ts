@@ -26,10 +26,13 @@ test("her definition is one the agents module serves, with only niwa's tools", (
 test("she changes herself by code only when the owner turned it on, and only plugins of her own group", () => {
   const plain = rinDefinition({ role: "assistant" });
   expect(plain.hands?.some((hand) => hand.startsWith("plugin.install"))).toBe(false);
-  expect(plain.prompt).not.toContain("plugin.install");
+  expect(plain.hands).not.toContain("rin.self.install");
+  expect(plain.prompt).not.toContain("rin.self.install");
   const selfEdit = rinDefinition({ role: "assistant", selfEdit: true });
-  expect(selfEdit.hands).toContain("plugin.install@rin/*");
-  expect(selfEdit.prompt).toContain("plugin.install");
+  // Her hand is her own action, which asks the owner; the host's install, even scoped to her group, asks nobody.
+  expect(selfEdit.hands).toContain("rin.self.install");
+  expect(selfEdit.hands?.some((hand) => hand.startsWith("plugin.install"))).toBe(false);
+  expect(selfEdit.prompt).toContain("rin.self.install");
 });
 
 test("her prompt answers when a conversation may make a promise and what of his memory may leave", () => {

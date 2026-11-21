@@ -22,6 +22,10 @@ export type ItemId = z.output<typeof ItemId>;
 export const CorrectionId = z.string().regex(/^cor-[0-9a-f]{10}$/);
 export type CorrectionId = z.output<typeof CorrectionId>;
 
+/** One change of herself she asked the owner to approve. */
+export const EditId = z.string().regex(/^edit-[0-9a-f]{10}$/);
+export type EditId = z.output<typeof EditId>;
+
 /** One rule of her charter, from the moment it is proposed. */
 export const RuleId = z.string().regex(/^rule-[0-9a-f]{10}$/);
 export type RuleId = z.output<typeof RuleId>;
@@ -156,11 +160,31 @@ export const CharterProposed = record(
 /** The owner confirmed a rule: it is part of the charter from now on. */
 export const CharterRuled = record("rin.charter.ruled", z.object({ rule: RuleId, by: Address }));
 
-/** A proposed rule did not become part of the charter: the owner said no, or the question was dropped. */
-export const CharterDeclined = record("rin.charter.declined", z.object({ rule: RuleId, why: z.enum(["declined", "cancelled", "expired"]) }));
+/** A proposed rule did not become part of the charter: the owner said no, the question was dropped, or something else than he answered it. */
+export const CharterDeclined = record(
+  "rin.charter.declined",
+  z.object({ rule: RuleId, why: z.enum(["declined", "cancelled", "expired", "not-his"]) }),
+);
 
 /** The owner took a rule out of the charter. */
 export const CharterRetired = record("rin.charter.retired", z.object({ rule: RuleId, reason: z.string().min(1).optional() }));
+
+// ---- changing herself -----------------------------------------------------------------------------------------
+
+/**
+ * Rin asked to install a plugin of her own group: the module, and the hash of the file as it was when she asked.
+ * The install is pinned to that hash, so what the owner approves is the file that is installed.
+ */
+export const SelfEditProposed = record(
+  "rin.self-edit.proposed",
+  z.object({ edit: EditId, plugin: z.string().min(1), module: z.string().min(1), hash: z.string().min(1), why: Text }),
+);
+
+/** How a change of herself ended: installed, or why it was not. */
+export const SelfEditSettled = record(
+  "rin.self-edit.settled",
+  z.object({ edit: EditId, outcome: z.enum(["installed", "declined", "cancelled", "expired", "not-his", "failed"]), detail: z.string().optional() }),
+);
 
 /** The record types Rin declares. */
 export const RIN_TYPES = [
@@ -180,6 +204,8 @@ export const RIN_TYPES = [
   CharterRuled,
   CharterDeclined,
   CharterRetired,
+  SelfEditProposed,
+  SelfEditSettled,
 ] as const;
 
 // ---- actions --------------------------------------------------------------------------------------------------
@@ -314,6 +340,21 @@ export const rinCharter = actionRef("rin.charter", {
   output: z.object({ rules: z.array(RuleItem), corrections: z.array(CorrectionItem) }),
 });
 
+export const rinSelfInstall = actionRef("rin.self.install", {
+  description:
+    "Asks the owner to let Rin install a plugin of her own group (a name that begins with `rin/`) from a module file that exports it as its default. Say what the plugin does and why in `why`. The owner is asked every time, and is shown the file's hash: only that file is installed, and only if he says yes. The answer comes back to her as a fact.",
+  input: z.object({ plugin: z.string().min(1), module: z.string().min(1), why: Text }),
+  output: z.object({ edit: EditId, hash: z.string() }),
+});
+
+/** The core action that installs a plugin from a file, as the handler that carries out an approved change calls it. */
+export const pluginInstall = actionRef("plugin.install", {
+  description: "Installs a plugin from a module file, or replaces the installed plugin of that name; the hash pins the file.",
+  input: z.object({ plugin: z.string().min(1), module: z.string().min(1), hash: z.string().min(1).optional() }),
+  output: z.object({ plugin: z.string(), version: z.string(), hash: z.string() }),
+  target: (input) => input.plugin,
+});
+
 export const rinBriefing = actionRef("rin.briefing", {
   description: "Rin's section of a briefing: what she held for the owner's next contact, and the rules of her charter that wait for his word.",
   input: z.object({ agent: AgentName }),
@@ -327,4 +368,4 @@ export const rinPromptCharter = actionRef("rin.prompt.charter", {
 });
 
 /** The actions of Rin's attention and charter, for her hands. */
-export const RIN_ACTIONS = [rinNotice, rinAttend, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter] as const;
+export const RIN_ACTIONS = [rinNotice, rinAttend, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter, rinSelfInstall] as const;

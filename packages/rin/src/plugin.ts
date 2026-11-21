@@ -18,6 +18,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { OptionIdSchema, action, actionName, agent as agentAddress, owner, recordId, seq } from "@niwa-labs/core";
@@ -31,7 +33,7 @@ import { DecisionMade, DecisionRevoked } from "@niwa-labs/delegate/records";
 import { NoteCorrected, NoteErased, NoteRetracted, NoteWritten } from "@niwa-labs/memory/records";
 import { MessageReceived, MessageSent } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
-import { RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
+import { RequestAnswered, RequestCancelled, RequestCancelledRecord, RequestCreated, RequestExpired, RequestExpiredRecord, answeredBy, question, requestAsk } from "@niwa-labs/requests/records";
 import { timer } from "@niwa-labs/timer";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 
@@ -78,6 +80,9 @@ import {
   OccasionOpened,
   OccasionRepeated,
   RIN_TYPES,
+  SelfEditProposed,
+  SelfEditSettled,
+  pluginInstall,
   rinAttend,
   rinAttention,
   rinBriefing,
@@ -89,6 +94,7 @@ import {
   rinDismiss,
   rinNotice,
   rinPromptCharter,
+  rinSelfInstall,
 } from "./records.ts";
 import type { Contact, OccasionId, Subject, Topic } from "./records.ts";
 
@@ -120,7 +126,7 @@ export interface RinOptions {
 export class RinRefusal extends Error {
   override name = "RinRefusal";
   constructor(
-    readonly code: "not-rin" | "not-owner" | "unknown" | "no-text" | "already-said" | "insist" | "open-proposal" | "not-his-words",
+    readonly code: "not-rin" | "not-owner" | "unknown" | "no-text" | "already-said" | "insist" | "open-proposal" | "not-his-words" | "self-edit-off" | "not-her-group",
     message: string,
   ) {
     super(message);
@@ -142,19 +148,24 @@ function firstLine(text: string, max = 160): string {
 const ATTENTION_TYPES = [OccasionOpened, OccasionRepeated, OccasionEnded, AttentionDecided, AttentionHeld, AttentionSending, AttentionSaid, AttentionBrought, AttentionDropped, AttentionDismissed].map((type) => type.name as string);
 const CHARTER_TYPES = [Corrected, CharterDue, CharterProposed, CharterRuled, CharterDeclined, CharterRetired].map((type) => type.name as string);
 
-/** The question that puts a rule of the charter to the owner. */
+/** The choices of a question to the owner that only his yes settles. */
 const CONFIRM = OptionIdSchema.parse("confirm");
 const DECLINE = OptionIdSchema.parse("decline");
-function ruleQuestion(text: string, about: string) {
-  return question("rin.charter.confirm", {
+function confirmQuestion(name: string, title: string) {
+  return question(name, {
     kind: "choice",
-    title: `Rin proposes a rule for her charter (${about}): ${text}`,
+    title,
     options: [
       { id: CONFIRM, label: "confirm", flavor: "plain" },
       { id: DECLINE, label: "decline", flavor: "plain" },
     ],
   });
 }
+/** The question that puts a rule of the charter to the owner. */
+const ruleQuestion = (text: string, about: string) => confirmQuestion("rin.charter.confirm", `Rin proposes a rule for her charter (${about}): ${text}`);
+
+/** How a question that only the owner's yes settles ended. `not-his`: something else than he answered it. */
+type Verdict = "confirmed" | "declined" | "cancelled" | "expired" | "not-his";
 
 /** A message the owner wrote to Rin: a contact, and his own words. */
 const ToRin = { "to.kind": "agent", "to.id": RIN_AGENT, "from.kind": "owner" } as const;
@@ -191,6 +202,23 @@ export function rinPlugin(options: RinOptions): Plugin {
     const attention = (): AttentionState => foldAttention(rowsOf([...ATTENTION_TYPES, ATTACHED]), RIN_AGENT);
     const charter = (): CharterState => foldCharter(rowsOf(CHARTER_TYPES));
     const ruledIds = () => new Set<string>(ruledRules(charter()).map((rule) => rule.rule));
+
+    /**
+     * Put a question to the owner and wait. A yes counts only when the owner gave it: a resolver may answer a
+     * request before it reaches him, and what a resolver recalls is not his word on a rule or on code.
+     */
+    const askOwner = async (step: Step, asking: ReturnType<typeof confirmQuestion>, key: string): Promise<Verdict> => {
+      try {
+        const { id, answer } = answeredBy(await step(requestAsk, { to: owner, ...asking }, { key }));
+        const answers = journal()?.find({ type: RequestAnswered.name, field: "id", equals: id }) ?? [];
+        if (!answers.some((stored) => (stored.data as { by?: { kind?: unknown } }).by?.kind === "owner")) return "not-his";
+        return "ids" in answer && answer.ids[0] === CONFIRM ? "confirmed" : "declined";
+      } catch (error) {
+        if (error instanceof RequestCancelled) return "cancelled";
+        if (error instanceof RequestExpired) return "expired";
+        throw error;
+      }
+    };
 
     // The clock of the host, once it serves: what a read that has no record of its own tells the time by.
     let clock: (() => number) | undefined;
@@ -692,23 +720,66 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // A rule she proposed is put to the owner, and only his yes makes it part of the charter. She is told either way.
     api.on(CharterProposed, { id: "confirm-rule", filter: { "by.kind": "agent" }, concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      let confirmed: boolean;
-      try {
-        const { answer } = answeredBy(await step(requestAsk, { to: owner, ...ruleQuestion(data.text, data.about) }, { key: "ask" }));
-        confirmed = "ids" in answer && answer.ids[0] === CONFIRM;
-      } catch (error) {
-        if (!(error instanceof RequestCancelled) && !(error instanceof RequestExpired)) throw error;
-        await step.emit(CharterDeclined, { rule: data.rule, why: error instanceof RequestCancelled ? "cancelled" : "expired" }, { key: "declined" });
-        await step(agentNotify, { agent: RIN_AGENT, text: `The rule you proposed was not confirmed (the question was ${error instanceof RequestCancelled ? "cancelled" : "left to expire"}): ${data.text}` }, { key: "told" });
-        return;
+      const verdict = await askOwner(step, ruleQuestion(data.text, data.about), "ask");
+      if (verdict === "confirmed") await step.emit(CharterRuled, { rule: data.rule, by: owner }, { key: "ruled" });
+      else await step.emit(CharterDeclined, { rule: data.rule, why: verdict }, { key: "declined" });
+      const told: Record<Verdict, string> = {
+        confirmed: `The owner confirmed a rule of your charter, ${data.rule}: ${data.text}`,
+        declined: `The owner declined the rule you proposed: ${data.text}`,
+        cancelled: `The rule you proposed was not confirmed (the question was cancelled): ${data.text}`,
+        expired: `The rule you proposed was not confirmed (the question was left to expire): ${data.text}`,
+        "not-his": `The rule you proposed was not answered by the owner, so it is not part of your charter: ${data.text}`,
+      };
+      await step(agentNotify, { agent: RIN_AGENT, text: told[verdict] }, { key: "told" });
+    });
+
+    // ---- changing herself -----------------------------------------------------------------------------------
+
+    api.action(
+      action(rinSelfInstall, {
+        // The edit is cut from the operation: a repeat finds the proposal the first call wrote.
+        recovery: "repeat",
+        effect: "record",
+        world: "niwa",
+        run: async (input, ctx) => {
+          if (whoIs(ctx.caller) !== "rin") throw new RinRefusal("not-rin", "only Rin proposes to change herself");
+          if (options.selfEdit !== true) throw new RinRefusal("self-edit-off", "changing herself by code is turned off");
+          if (!input.plugin.startsWith("rin/")) throw new RinRefusal("not-her-group", `a plugin of hers has a name that begins with rin/, not "${input.plugin}"`);
+          if (!isAbsolute(input.module)) throw new RinRefusal("unknown", "give the module as an absolute path");
+          const bytes = await readFile(input.module).catch(() => undefined);
+          if (bytes === undefined) throw new RinRefusal("unknown", `cannot read the module ${input.module}`);
+          const hash = createHash("sha256").update(bytes).digest("hex");
+          const edit = idOf("edit", String(ctx.operationId));
+          await ctx.emit(SelfEditProposed, { edit, plugin: input.plugin, module: input.module, hash, why: input.why });
+          return { edit, hash };
+        },
+      }),
+    );
+
+    // The owner is asked about the file as it was when she asked, and only that file is installed, only on his yes.
+    api.on(SelfEditProposed, { id: "confirm-self-edit", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
+      const title = `Rin asks to install the plugin ${data.plugin} from ${data.module} (sha256 ${data.hash}): ${data.why}`;
+      const verdict = await askOwner(step, confirmQuestion("rin.self-edit.confirm", title), "ask");
+      let detail: string | undefined;
+      let outcome: Exclude<Verdict, "confirmed"> | "installed" | "failed";
+      if (verdict !== "confirmed") outcome = verdict;
+      else {
+        const installed = await step.outcome(pluginInstall, { plugin: data.plugin, module: data.module, hash: data.hash }, { key: "install" });
+        outcome = installed.status === "completed" ? "installed" : "failed";
+        if (installed.status === "failed") detail = installed.error;
+        else if (installed.status === "denied" || installed.status === "cancelled") detail = installed.reason;
+        else if (installed.status === "unknown") detail = "the outcome is not known";
       }
-      if (confirmed) await step.emit(CharterRuled, { rule: data.rule, by: owner }, { key: "ruled" });
-      else await step.emit(CharterDeclined, { rule: data.rule, why: "declined" }, { key: "declined" });
-      await step(
-        agentNotify,
-        { agent: RIN_AGENT, text: confirmed ? `The owner confirmed a rule of your charter, ${data.rule}: ${data.text}` : `The owner declined the rule you proposed: ${data.text}` },
-        { key: "told" },
-      );
+      await step.emit(SelfEditSettled, { edit: data.edit, outcome, ...(detail === undefined ? {} : { detail }) }, { key: "settled" });
+      const told: Record<typeof outcome, string> = {
+        installed: `The owner approved and the plugin ${data.plugin} is installed.`,
+        failed: `The owner approved the plugin ${data.plugin}, but it was not installed (${firstLine(detail ?? "")}).`,
+        declined: `The owner declined the plugin ${data.plugin}; nothing was installed.`,
+        cancelled: `The question about the plugin ${data.plugin} was cancelled; nothing was installed.`,
+        expired: `The question about the plugin ${data.plugin} was left to expire; nothing was installed.`,
+        "not-his": `The question about the plugin ${data.plugin} was not answered by the owner; nothing was installed.`,
+      };
+      await step(agentNotify, { agent: RIN_AGENT, text: told[outcome] }, { key: "told" });
     });
 
     api.action(

@@ -99,7 +99,7 @@ leaves unanswered a question of hers, or waves away what she told him
 
 Two corrections about one thing that no rule covers (`ruleAfter`) ask her
 for a rule. She words it and proposes it with `rin.charter.propose`; the
-owner is asked, and only his yes makes it part of the charter. A rule he
+owner is asked, and only his own yes makes it part of the charter. A rule he
 proposes himself stands at once; `rin.charter.retire` takes one out.
 
 ## Leading the work
@@ -114,9 +114,10 @@ as facts; she makes agents with `agent.create` and gives them work.
   holds, never her notes. Notes about the owner leave only with his answer;
   facts about a project go to the agents of that project.
 
-With `selfEdit: true` she may change herself by code: write a plugin of the
-group `rin/` and install it with `plugin.install`, which asks the owner every
-time.
+With `selfEdit: true` she may change herself by code: she has a plugin of the
+group `rin/` written to a module file and proposes it with `rin.self.install`.
+The owner is asked every time and is shown the file's hash; only that file is
+installed, and only on his own yes. The answer of a resolver is not his word.
 
 ## Cockpit
 

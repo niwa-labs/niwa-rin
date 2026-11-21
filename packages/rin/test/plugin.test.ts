@@ -4,13 +4,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { action, actionRef, grant, principalOf } from "@niwa-labs/core";
+import { OptionIdSchema, action, actionRef, grant, principalOf } from "@niwa-labs/core";
 import type { Address, Caller, StoredRecord } from "@niwa-labs/core";
-import { AGENT, plugin } from "@niwa-labs/plugin";
+import { AGENT, plugin, pluginName } from "@niwa-labs/plugin";
 import type { AgentOffer, Plugin } from "@niwa-labs/plugin";
 import { AGENT_BRIEFING, AGENT_PROMPT_SECTION, AGENT_TYPES, agentNotify } from "@niwa-labs/agent/records";
 import { messageSendRef } from "@niwa-labs/messages/records";
-import { requests } from "@niwa-labs/requests";
+import { ResolverRegistry, requests } from "@niwa-labs/requests";
 import { requestAnswer, requestAsk, requestCancel } from "@niwa-labs/requests/records";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 import { connect, connectAsOwner, createNiwa, eventually, messages, tempHome, testClock, timers } from "@niwa-labs/testing";
@@ -29,6 +29,7 @@ import {
   rinCorrect,
   rinDismiss,
   rinNotice,
+  rinSelfInstall,
 } from "../src/records.ts";
 
 const HOUR = 3_600_000;
@@ -71,6 +72,8 @@ function writer(name: string, types: readonly { name: string }[], extra: (api: P
 }
 
 interface World {
+  readonly home: string;
+  readonly host: ReturnType<typeof createNiwa>;
   readonly clock: TestClock;
   /** What Rin was told, in order: the facts of her inbox. */
   readonly told: string[];
@@ -94,7 +97,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function world(options: Partial<RinOptions> = {}, start = NOON): Promise<World> {
+async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?: ResolverRegistry): Promise<World> {
   const home = await tempHome();
   const clock = testClock(start);
   const host = createNiwa({ home: home.path, clock });
@@ -143,7 +146,7 @@ async function world(options: Partial<RinOptions> = {}, start = NOON): Promise<W
   });
   host.use(
     messages({ bind }),
-    requests({ bind }),
+    requests({ bind, ...(resolvers === undefined ? {} : { resolvers }) }),
     timers([]),
     agentsStub,
     workflowStub,
@@ -163,6 +166,8 @@ async function world(options: Partial<RinOptions> = {}, start = NOON): Promise<W
   const lead = await session("lead");
   const records = async (type: string) => (await host.records.read()).filter((row) => row.type === type);
   return {
+    home: home.path,
+    host,
     clock,
     told,
     sent,
@@ -440,4 +445,100 @@ test("notices and decisions that arrive at once are taken one after the other", 
   const subject = { kind: "occasion" as const, occasion: w.lastOccasion() };
   const decided = await Promise.allSettled([1, 2].map((n) => w.rin.call(rinAttend, { subject, decision: "now", text: `PR 5 is red (${n})` })));
   expect(decided.map((one) => one.status).sort()).toEqual(["fulfilled", "rejected"]);
+});
+
+// ---- the owner's word -------------------------------------------------------------------------------------------
+
+/** A resolver that answers every question with the choice, as a judge of an area would. */
+function resolving(choice: string): ResolverRegistry {
+  const resolvers = new ResolverRegistry();
+  resolvers.register("*", () => ({ answered: true, answer: { ids: [OptionIdSchema.parse(choice)] }, info: { how: "recalled" } }));
+  return resolvers;
+}
+
+test("a rule is the owner's only when he answered: a resolver's yes leaves it out of the charter", async () => {
+  const w = await world({}, NOON, resolving("confirm"));
+  const proposed = await w.rin.call(rinCharterPropose, { about: "tone", text: "No jokes before ten" });
+  await eventually(async () => (await w.records("rin.charter.declined")).length === 1);
+  expect((await w.records("rin.charter.ruled")).length).toBe(0);
+  expect((await w.records("rin.charter.declined"))[0]?.data).toMatchObject({ rule: proposed.rule, why: "not-his" });
+  expect((await w.owner.call(rinCharter, {})).rules).toMatchObject([{ rule: proposed.rule, status: "declined" }]);
+  await toldCount(w, 1);
+  expect(w.told[0]).toContain("not answered by the owner");
+});
+
+/** A module that exports a plugin of Rin's group, written to a file of the host's home. */
+async function moduleOf(w: World, name: string, version: string): Promise<string> {
+  const path = `${w.home}/${name.replace("/", "-")}.ts`;
+  await Bun.write(
+    path,
+    [`import { plugin } from ${JSON.stringify(import.meta.resolve("@niwa-labs/plugin"))};`, `export default plugin(${JSON.stringify(name)}, () => {}, { version: ${JSON.stringify(version)} });`, ""].join("\n"),
+  );
+  return path;
+}
+
+/** The request Rin's last proposal to the owner opened. */
+async function asked(w: World, count: number): Promise<{ id: string; input: { title: string } }> {
+  await eventually(async () => (await w.records("request.created")).length === count);
+  return (await w.records("request.created"))[count - 1]!.data as { id: string; input: { title: string } };
+}
+
+test("she installs a plugin of her own group only after the owner said yes to that file", async () => {
+  const w = await world({ selfEdit: true });
+  const module = await moduleOf(w, "rin/extra", "v1");
+  const proposed = await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "to keep a diary" });
+  const request = await asked(w, 1);
+  expect(request.input.title).toContain("rin/extra");
+  expect(request.input.title).toContain(proposed.hash);
+  expect(request.input.title).toContain("to keep a diary");
+  // Nothing is installed while the owner has not answered.
+  expect(w.host.installed(pluginName("rin/extra"))).toBeUndefined();
+
+  await w.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 1);
+  expect((await w.records("rin.self-edit.settled"))[0]?.data).toMatchObject({ edit: proposed.edit, outcome: "installed" });
+  expect(String(w.host.installed(pluginName("rin/extra"))?.version)).toBe("v1");
+  await toldCount(w, 1);
+  expect(w.told[0]).toContain("rin/extra");
+});
+
+test("a plugin the owner declines is not installed, and a file changed after he looked is refused", async () => {
+  const w = await world({ selfEdit: true });
+  const module = await moduleOf(w, "rin/extra", "v1");
+  await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
+  await w.owner.call(requestAnswer, { id: (await asked(w, 1)).id, answer: { ids: ["decline"] } });
+  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 1);
+  expect((await w.records("rin.self-edit.settled"))[0]?.data).toMatchObject({ outcome: "declined" });
+  expect(w.host.installed(pluginName("rin/extra"))).toBeUndefined();
+
+  // He says yes to the file he was shown; it changes before it is installed.
+  await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary again" });
+  const second = await asked(w, 2);
+  await moduleOf(w, "rin/extra", "v2");
+  await w.owner.call(requestAnswer, { id: second.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 2);
+  expect((await w.records("rin.self-edit.settled"))[1]?.data).toMatchObject({ outcome: "failed" });
+  expect(w.host.installed(pluginName("rin/extra"))).toBeUndefined();
+});
+
+test("a resolver's yes does not install a plugin", async () => {
+  const w = await world({ selfEdit: true }, NOON, resolving("confirm"));
+  const module = await moduleOf(w, "rin/extra", "v1");
+  await w.rin.call(rinSelfInstall, { plugin: "rin/extra", module, why: "diary" });
+  await eventually(async () => (await w.records("rin.self-edit.settled")).length === 1);
+  expect((await w.records("rin.self-edit.settled"))[0]?.data).toMatchObject({ outcome: "not-his" });
+  expect(w.host.installed(pluginName("rin/extra"))).toBeUndefined();
+});
+
+test("only Rin proposes to change herself, only when the owner turned it on, and only a plugin of her group", async () => {
+  const on = await world({ selfEdit: true });
+  const module = await moduleOf(on, "rin/extra", "v1");
+  await expect(on.lead.call(rinSelfInstall, { plugin: "rin/extra", module, why: "x" })).rejects.toThrow("only Rin");
+  await expect(on.owner.call(rinSelfInstall, { plugin: "rin/extra", module, why: "x" })).rejects.toThrow("only Rin");
+  await expect(on.rin.call(rinSelfInstall, { plugin: "other/extra", module, why: "x" })).rejects.toThrow("begins with rin/");
+  await expect(on.rin.call(rinSelfInstall, { plugin: "rin/extra", module: `${on.home}/missing.ts`, why: "x" })).rejects.toThrow("cannot read");
+  expect((await on.records("request.created")).length).toBe(0);
+
+  const off = await world();
+  await expect(off.rin.call(rinSelfInstall, { plugin: "rin/extra", module: await moduleOf(off, "rin/extra", "v1"), why: "x" })).rejects.toThrow("turned off");
 });

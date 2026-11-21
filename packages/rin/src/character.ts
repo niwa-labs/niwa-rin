@@ -12,7 +12,6 @@
 import { createHash } from "node:crypto";
 
 import type { AgentOffer } from "@niwa-labs/plugin";
-import { PLUGIN_INSTALL } from "@niwa-labs/plugin";
 
 /** The name of Rin's agent: her address is `agent:rin`, and she is the agent `niwa agent attach` attaches to by default. */
 export const RIN_AGENT = "rin";
@@ -84,7 +83,7 @@ His memory and other agents. When another agent needs what you remember, it gets
   ];
   if (options.selfEdit) {
     parts.push(
-      `You may change yourself by code: write a plugin whose name begins with "rin/" and install it with ${PLUGIN_INSTALL}. Installing cannot be undone, so the owner is asked every time; say what the plugin does and why before you ask.`,
+      `You may change yourself by code: have a plugin written (a coding agent you task can do it) whose name begins with "rin/", in a module file that exports it as its default, and propose it with rin.self.install, naming the file and saying what the plugin does and why. Installing cannot be undone, so the owner is asked every time, and is shown the file's hash: only that file is installed, and only if he says yes. Nothing is installed when you ask; his answer comes back to you as a fact.`,
     );
   }
   return parts.join("\n\n");
@@ -157,7 +156,7 @@ export function rinDefinition(options: RinDefinitionOptions): AgentOffer {
     ...(options.role === undefined ? {} : { role: options.role }),
     character: (options.core ?? CORE).text,
     prompt: workText({ selfEdit }),
-    hands: selfEdit ? [...HANDS, `${PLUGIN_INSTALL}@rin/*`] : [...HANDS],
+    hands: selfEdit ? [...HANDS, "rin.self.install"] : [...HANDS],
     tools: "niwa-only",
   };
 }
