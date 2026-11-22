@@ -2,7 +2,7 @@ import { readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import * as ts from "typescript";
 
-export type Repo = "niwa" | "plugins" | "rin" | "pstack";
+export type Repo = "niwa" | "plugins" | "rin" | "pstack" | "mcode-stack";
 
 // Zones, lowest first. A package may import its own zone or a lower one.
 // Leaves (surfaces, compositions, the umbrella, testing) are imported by
@@ -84,6 +84,7 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/digest": lib({ "@niwa-labs/harness": "*" }),
   "@niwa-labs/sandbox": { ...lib(), entries: [".", "./profiles"] },
   "@niwa-labs/ui-kit": { ...lib(), entries: [".", "./theme.css"] },
+  "@niwa-labs/upstream-map": { ...lib(), entries: [".", "./cli"] },
 
   // Zone II: the foundation.
   "@niwa-labs/core": { repo: "niwa", zone: "foundation", kind: "foundation", entries: [".", "./journal"], deps: {} },
@@ -250,10 +251,16 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
       "@niwa-labs/evidence": "*",
       "@niwa-labs/plan": "*",
       "@niwa-labs/flow-code": "*",
+      "@niwa-labs/upstream-map": "*",
       ...SCRIPT_TYPES,
       ...ON_HOST,
     },
     "pstack",
+  ),
+  "@niwa-labs/mcode-stack": leaf(
+    "composition",
+    { "@niwa-labs/upstream-map": "*", ...SCRIPT_TYPES, ...ON_HOST },
+    "mcode-stack",
   ),
 };
 
