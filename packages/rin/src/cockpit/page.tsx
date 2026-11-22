@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 
-import { PageLink, useAction, useCall, useViewer, recordList, useProjection } from "@niwa-labs/cockpit-sdk";
-import { Badge, Button } from "@niwa-labs/ui-kit";
+import { EntityLink, PageLink, useAction, useCall, useViewer, recordList, useProjection } from "@niwa-labs/cockpit-sdk";
+import { Button, CopyValue, FileRef, Markdown } from "@niwa-labs/ui-kit";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, selfHistoryAction, tellAction, uninstallAction } from "./actions.ts";
+import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, openQuestionsAction, retireAction, selfHistoryAction, tellAction, uninstallAction } from "./actions.ts";
 import type { AttentionView } from "./actions.ts";
 import { attentionGroups, charterRows, conversationRows, ledAgents, tileText, whyText } from "./view.ts";
 
@@ -30,7 +30,7 @@ function Talk() {
   const [text, setText] = useState("");
   return (
     <form
-      className="flex gap-2"
+      className="flex min-w-0 flex-wrap items-start gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         const sent = text.trim();
@@ -40,9 +40,9 @@ function Talk() {
         });
       }}
     >
-      <textarea className="min-h-16 flex-1 rounded-md border bg-background p-2 text-sm" aria-label="Write to Rin" value={text} placeholder="Write to Rin" onChange={(event) => setText(event.target.value)} />
+      <textarea className="min-h-16 flex-1 rounded-md border bg-background p-2 text-sm" aria-label="Написать Рин" value={text} placeholder="Написать Рин" onChange={(event) => setText(event.target.value)} />
       <Button type="submit" size="sm" disabled={tell.isPending || text.trim() === ""}>
-        Send
+        Отправить
       </Button>
       {tell.isError ? <span role="alert" className="text-xs text-destructive">{tell.error.message}</span> : null}
     </form>
@@ -51,19 +51,21 @@ function Talk() {
 
 function Conversation() {
   const conversation = useCall(conversationAction, { conversation: REPLY_ROUTE.conversation }, { refreshOn: { types: ["message.sent", "agent.turn.delivered", "agent.turn.failed", "agent.turn.replied"] } });
-  if (conversation.isPending) return <Quiet>Loading…</Quiet>;
+  if (conversation.isPending) return <Quiet>Загружаем…</Quiet>;
   if (conversation.isError) return <p role="alert" className="text-sm text-destructive">{conversation.error.message}</p>;
   const rows = conversationRows(conversation.data.messages);
-  if (rows.length === 0) return <Quiet>Nothing said yet.</Quiet>;
+  if (rows.length === 0) return <Quiet>Сообщений пока нет. Напишите Рин, чтобы начать разговор.</Quiet>;
   return (
     <ul className="flex flex-col gap-2">
       {rows.map((row) => (
         <li key={row.id} data-slot="rin-message" data-who={row.who} data-turn={row.turn} className="flex min-w-0 flex-col rounded-lg border bg-card px-3 py-2">
           <span className="text-sm">
-            <span className="font-medium">{row.who}</span> · {row.text}
+            <span className="font-medium">{row.who}</span>
+          </span>
+          <span className="whitespace-pre-wrap break-words text-sm">{row.text}
           </span>
           <span className="text-xs text-muted-foreground">
-            {new Date(row.at).toLocaleString()}
+            {new Date(row.at).toLocaleString("ru")}
             {row.state === undefined ? "" : ` · ${row.state}`}
           </span>
         </li>
@@ -72,23 +74,29 @@ function Conversation() {
   );
 }
 
+const OCCASION_LABEL: Readonly<Record<string, string>> = {
+  agent: "Агент", ci: "Проверки", task: "Задача", question: "Вопрос", workflow: "Сценарий",
+};
+
 function Item({ item, owner }: { item: AttentionView; owner: boolean }) {
   const dismiss = useAction(dismissAction);
   const open = item.status === "held" || item.status === "sending" || item.status === "unsure" || item.status === "said" || item.status === "brought";
+  const kind = item.kind === undefined ? undefined : OCCASION_LABEL[item.kind];
   return (
-    <li data-slot="rin-attention" data-status={item.status} className="flex min-w-0 items-center gap-3 rounded-lg border bg-card px-3 py-2">
+    <li data-slot="rin-attention" data-status={item.status} className="flex min-w-0 flex-wrap items-start gap-3 border-b px-3 py-3 last:border-b-0">
       <div className="flex min-w-0 flex-col">
         <span className="text-sm">{item.text}</span>
         <span className="text-xs text-muted-foreground">
-          {item.kind === undefined ? "" : `${item.kind} · `}
-          {whyText(item)} · {new Date(item.at).toLocaleString()}
+          {kind === undefined ? "" : `${kind} · `}
+          {whyText(item)} · {new Date(item.at).toLocaleString("ru")}
         </span>
       </div>
       {owner && open ? (
         <Button className="ml-auto" variant="outline" size="sm" disabled={dismiss.isPending} onClick={() => dismiss.mutate({ item: item.item })}>
-          Not for me
+          Скрыть
         </Button>
       ) : null}
+      {dismiss.isError ? <p role="alert" className="w-full text-xs text-destructive">{dismiss.error.message}</p> : null}
     </li>
   );
 }
@@ -96,15 +104,18 @@ function Item({ item, owner }: { item: AttentionView; owner: boolean }) {
 function Attention() {
   const viewer = useViewer();
   const attention = useCall(attentionAction, {}, { refreshOn: { types: ["rin.*"] } });
-  if (attention.isPending) return <Quiet>Loading…</Quiet>;
+  if (attention.isPending) return <Quiet>Загружаем…</Quiet>;
   if (attention.isError) return <p role="alert" className="text-sm text-destructive">{attention.error.message}</p>;
   const groups = attentionGroups(attention.data.items);
-  const list = (items: AttentionView[], empty: string) =>
-    items.length === 0 ? <Quiet>{empty}</Quiet> : <ul className="flex flex-col gap-2">{items.map((item) => <Item key={item.item} item={item} owner={viewer.owner} />)}</ul>;
+  const list = (items: AttentionView[]) => (
+    <ul className="rounded-lg border bg-card">{items.map((item) => <Item key={item.item} item={item} owner={viewer.owner} />)}</ul>
+  );
   return (
     <>
-      <Section title="What she holds for you">{list(groups.waiting, "Nothing waits for you.")}</Section>
-      <Section title="What she told you">{list(groups.told, "She has told you nothing yet.")}</Section>
+      <Section title="Отложенные сообщения">
+        {groups.waiting.length ? list(groups.waiting) : <Quiet>У Рин нет сообщений, ожидающих доставки.</Quiet>}
+      </Section>
+      {groups.told.length ? <details className="space-y-2"><summary className="cursor-pointer text-sm font-medium">История уведомлений ({groups.told.length})</summary>{list(groups.told)}</details> : null}
     </>
   );
 }
@@ -113,23 +124,22 @@ function Charter() {
   const viewer = useViewer();
   const charter = useCall(charterAction, {}, { refreshOn: { types: ["rin.charter.*", "rin.corrected"] } });
   const retire = useAction(retireAction);
-  if (charter.isPending) return <Quiet>Loading…</Quiet>;
+  if (charter.isPending) return <Quiet>Загружаем…</Quiet>;
   if (charter.isError) return <p role="alert" className="text-sm text-destructive">{charter.error.message}</p>;
   const rows = charterRows(charter.data.rules);
   return rows.length === 0 ? (
-    <Quiet>No rules yet: they grow from your corrections ({charter.data.corrections.length} so far).</Quiet>
+    <Quiet>В уставе пока нет правил. Учтено поправок: {charter.data.corrections.length}.</Quiet>
   ) : (
     <ul className="flex flex-col gap-2">
       {rows.map((row) => (
-        <li key={row.rule} data-slot="rin-rule" data-status={row.status} className="flex min-w-0 items-center gap-3 rounded-lg border bg-card px-3 py-2">
-          <Badge variant="secondary">{row.label}</Badge>
-          <span className="min-w-0 flex-1 text-sm">{row.text}</span>
-          <span className="text-xs text-muted-foreground">
-            {row.about} · {row.corrections} corrections
-          </span>
+        <li key={row.rule} data-slot="rin-rule" data-status={row.status} className="flex min-w-0 flex-wrap items-start gap-3 border-b px-3 py-3 last:border-b-0">
+          <div className="min-w-0 flex-1">
+            <p className="break-words text-sm">{row.text}</p>
+            <p className="text-xs text-muted-foreground">{row.label} · {row.about} · поправок: {row.corrections}</p>
+          </div>
           {viewer.owner && (row.status === "ruled" || row.status === "proposed") ? (
             <Button variant="outline" size="sm" disabled={retire.isPending} onClick={() => retire.mutate({ rule: row.rule })}>
-              Retire
+              Снять правило
             </Button>
           ) : null}
         </li>
@@ -138,56 +148,120 @@ function Charter() {
   );
 }
 
+const PROMISE_STATUS: Readonly<Record<string, string>> = {
+  proposed: "Ждёт подтверждения", open: "Открыто", due: "Срок наступил",
+  kept: "Выполнено", "kept-late": "Выполнено с опозданием", missed: "Просрочено",
+  cancelled: "Отменено", declined: "Отклонено",
+};
+
 function Promises() {
   const promises = useCall(commitmentsAction, { to: RIN }, { refreshOn: { types: ["commitment.*"] } });
-  if (promises.isPending) return <Quiet>Loading…</Quiet>;
-  if (promises.isError) return <p role="alert" className="text-sm text-destructive">{promises.error.message}</p>;
-  if (promises.data.items.length === 0) return <Quiet>No promises.</Quiet>;
-  return (
-    <ul className="flex flex-col gap-1 text-sm">
-      {promises.data.items.map((one) => (
-        <li key={one.id}>
-          {one.description} <span className="text-xs text-muted-foreground">· {one.status}</span>
+  if (promises.isPending) return <Quiet>Загружаем поручения…</Quiet>;
+  if (promises.isError) return <p role="alert" className="text-sm text-destructive">Не удалось загрузить поручения. {promises.error.message}</p>;
+  const active = (one: { status: string }) => one.status === "proposed" || one.status === "open" || one.status === "due";
+  const open = promises.data.items.filter(active).sort((a, b) => (a.due ?? Infinity) - (b.due ?? Infinity));
+  const history = promises.data.items.filter((item) => !active(item));
+  const list = (items: typeof open) => (
+    <ul className="divide-y rounded-lg border bg-card px-3">
+      {items.map((one) => (
+        <li key={one.id} className="space-y-1 py-2">
+          <p className="break-words text-sm">{one.description}</p>
+          <p className="desk-tools text-xs text-muted-foreground">
+            <span>{PROMISE_STATUS[one.status] ?? "Статус не определён"}</span>
+            {one.due === undefined ? null : <time dateTime={new Date(one.due).toISOString()}>До {new Date(one.due).toLocaleString("ru")}</time>}
+          </p>
         </li>
       ))}
     </ul>
+  );
+  return (
+    <>
+      {open.length ? list(open) : <Quiet>Открытых поручений для Рин нет.</Quiet>}
+      {history.length ? <details className="space-y-2">
+        <summary className="cursor-pointer text-sm font-medium">Завершённые поручения ({history.length})</summary>
+        {list(history)}
+      </details> : null}
+    </>
+  );
+}
+
+function Questions() {
+  const viewer = useViewer();
+  const available = viewer.owner && viewer.can(openQuestionsAction);
+  const open = useCall(openQuestionsAction, { to: { kind: "owner" } }, { enabled: available, refreshOn: { types: ["request.*"] } });
+  if (!available) return null;
+  const questions = (open.data?.requests ?? []).flatMap((row) => {
+    if (!("id" in row)) return [];
+    const title = row.question === "rin.charter.confirm" ? "Подтверждение правила устава" :
+      row.question === "rin.self-edit.confirm" ? "Подтверждение установки модуля" :
+      row.from?.kind === "agent" && row.from.id === RIN ? "Вопрос Рин" : undefined;
+    return title === undefined ? [] : [{ id: row.id, title, question: row.input.title }];
+  });
+  return (
+    <Section title="Открытые вопросы">
+      {open.isPending ? <Quiet>Загружаем вопросы…</Quiet> :
+        open.isError ? <p role="alert" className="text-sm text-destructive">Не удалось загрузить вопросы. {open.error.message}</p> :
+        questions.length === 0 ? <Quiet>Сейчас Рин не ждёт ваших решений.</Quiet> :
+        <ul className="divide-y rounded-lg border bg-card px-3">
+          {questions.map((row) => (
+            <li key={row.id} className="space-y-1 py-2">
+              <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                {row.title} <EntityLink entity={{ kind: "request", id: row.id }} short />
+              </p>
+              <p className="break-words text-sm text-muted-foreground">{row.question}</p>
+            </li>
+          ))}
+        </ul>}
+    </Section>
   );
 }
 
 function Memory() {
   const top = useCall(memoryAction, { memory: RIN }, { refreshOn: { types: ["memory.*"] } });
-  if (top.isPending) return <Quiet>Loading…</Quiet>;
+  if (top.isPending) return <Quiet>Загружаем…</Quiet>;
   if (top.isError) return <p role="alert" className="text-sm text-destructive">{top.error.message}</p>;
-  return top.data.text === "" ? <Quiet>Nothing lifted yet.</Quiet> : <pre className="whitespace-pre-wrap text-sm">{top.data.text}</pre>;
+  if (top.data.text === "") return <Quiet>В приоритетной памяти пока пусто.</Quiet>;
+  const text = top.data.text.replace(/^About the owner:\n(?=- )/gm, "**О владельце**\n\n")
+    .replace(/^In general:\n(?=- )/gm, "**Общее**\n\n");
+  return <Markdown text={text} />;
 }
+
+const AGENT_STATUS = { new: "Новый", working: "В работе", asleep: "Неактивен" };
 
 function Agents() {
   const agents = useCall(agentsAction, {}, { refreshOn: { types: ["agent.*"] } });
-  if (agents.isPending) return <Quiet>Loading…</Quiet>;
+  if (agents.isPending) return <Quiet>Загружаем…</Quiet>;
   if (agents.isError) return <p role="alert" className="text-sm text-destructive">{agents.error.message}</p>;
   const led = ledAgents(agents.data.items);
-  if (led.length === 0) return <Quiet>She leads no agents yet.</Quiet>;
+  if (led.length === 0) return <Quiet>Других агентов пока нет.</Quiet>;
   return (
     <ul className="flex flex-col gap-1 text-sm">
       {led.map((agent) => (
         <li key={agent.name}>
-          agent:{agent.name} <span className="text-xs text-muted-foreground">· {agent.status}</span>
+          {agent.name} <span className="text-xs text-muted-foreground">· {AGENT_STATUS[agent.status]}</span>
         </li>
       ))}
     </ul>
   );
 }
 
+const MODULE_STATUS: Readonly<Record<string, string>> = {
+  pending: "Ждёт решения", installing: "Устанавливается", installed: "Установлен",
+  declined: "Отклонён", cancelled: "Отменён", expired: "Срок истёк",
+  "not-his": "Подтверждение владельца не получено", failed: "Ошибка установки", unknown: "Итог неизвестен",
+};
+
 function SelfEdits() {
   const history = useCall(selfHistoryAction, {}, { refreshOn: { types: ["rin.self-edit.*", "niwa.plugin.*"] } });
   const uninstall = useAction(uninstallAction);
   const [selected, setSelected] = useState<{ plugin: string; hash: string }>();
-  if (history.isPending) return <Quiet>Loading…</Quiet>;
+  if (history.isPending) return <Quiet>Загружаем…</Quiet>;
   if (history.isError) return <p role="alert" className="text-sm text-destructive">{history.error.message}</p>;
   const { mode, edits, installed } = history.data;
   return (
-    <Section title="Rin’s modules">
-      <Quiet>{mode === "off" ? "Installation is disabled." : mode === "ask" ? "Each installation requires your approval." : "Rin can install modules without approval."}</Quiet>
+    <details className="space-y-2">
+      <summary className="cursor-pointer text-sm font-semibold">Модули Рин</summary>
+      <Quiet>{mode === "off" ? "Установка модулей отключена." : mode === "ask" ? "Установка требует вашего подтверждения." : "Рин может устанавливать модули самостоятельно."}</Quiet>
       {installed.length > 0 ? (
         <ul className="flex flex-col gap-2 text-sm">
           {installed.map((entry) => {
@@ -197,13 +271,13 @@ function SelfEdits() {
                 <span className="mr-auto">{entry.plugin} · {entry.version}</span>
                 {confirming ? (
                   <>
-                    <Button size="sm" variant="outline" onClick={() => setSelected(undefined)} disabled={uninstall.isPending}>Cancel</Button>
+                    <Button size="sm" variant="outline" onClick={() => setSelected(undefined)} disabled={uninstall.isPending}>Отмена</Button>
                     <Button size="sm" variant="destructive" disabled={uninstall.isPending} onClick={() => uninstall.mutate(selected, { onSuccess: () => setSelected(undefined) })}>
-                      Confirm uninstall
+                      Подтвердить удаление
                     </Button>
                   </>
                 ) : (
-                  <Button size="sm" variant="outline" disabled={uninstall.isPending} onClick={() => setSelected(entry)}>Uninstall</Button>
+                  <Button size="sm" variant="outline" disabled={uninstall.isPending} onClick={() => setSelected(entry)}>Удалить</Button>
                 )}
               </li>
             );
@@ -215,62 +289,82 @@ function SelfEdits() {
         <ul className="flex flex-col gap-2 text-sm">
           {edits.map((edit) => (
             <li key={edit.edit} className="flex flex-col rounded-lg border bg-card px-3 py-2">
-              <span>{edit.plugin} · {edit.status}</span>
+              <span>{edit.plugin} · {MODULE_STATUS[edit.status] ?? "Статус не определён"}</span>
               <span>{edit.why}</span>
-              <code className="break-all text-xs text-muted-foreground">{edit.hash}</code>
+              <div className="flex flex-wrap items-center gap-2 text-xs">{edit.module ? <FileRef path={edit.module} /> : null}<CopyValue value={edit.hash} label={edit.hash.slice(0, 12)} /></div>
               {edit.detail ? <span>{edit.detail}</span> : null}
             </li>
           ))}
         </ul>
       ) : null}
-    </Section>
+    </details>
   );
 }
 
 export function RinPage() {
   const { owner } = useViewer();
   return (
-    <div className="flex min-w-0 flex-col gap-5 p-4">
-      <h2 className="text-lg font-semibold">Rin</h2>
-      {owner ? (
-        <Section title="Talk to her">
-          <Conversation />
-          <Talk />
-        </Section>
-      ) : null}
-      <Attention />
-      {owner ? <SelfEdits /> : null}
-      <Section title="Her charter">
-        <Charter />
-      </Section>
-      <Section title="Her promises">
+    <article className="desk-page p-4">
+      <h1>Рин</h1>
+      <Questions />
+      <Section title="Поручения и обязательства">
         <Promises />
       </Section>
-      <Section title="What she remembers">
-        <Memory />
+      <Attention />
+      {owner ? (
+        <Section title="Разговор">
+          <Talk />
+          <Conversation />
+        </Section>
+      ) : null}
+      <Section title="Устав">
+        <Charter />
       </Section>
-      <Section title="Agents she leads">
+      {owner ? <SelfEdits /> : null}
+      <details className="space-y-2">
+        <summary className="cursor-pointer text-sm font-semibold">Приоритетная память</summary>
+        <Memory />
+      </details>
+      <Section title="Агенты Рин">
         <Agents />
       </Section>
-    </div>
+    </article>
   );
 }
 
-const recentActivity = recordList({ types: ["rin.*"] }, 8);
+const ACTIVITY_LABEL = new Map<string, string>([
+  ["rin.occasion.opened", "Замечено событие"],
+  ["rin.attention.held", "Сообщение отложено"],
+  ["rin.attention.said", "Сообщение доставлено"],
+  ["rin.attention.unsure", "Доставка не подтверждена"],
+  ["rin.attention.brought", "Событие обсуждено"],
+  ["rin.corrected", "Учтена поправка"],
+  ["rin.charter.proposed", "Предложено правило"],
+  ["rin.charter.ruled", "Правило принято"],
+  ["rin.charter.retired", "Правило снято"],
+  ["rin.self-edit.proposed", "Предложена установка модуля"],
+  ["rin.self-edit.settled", "Получен результат установки"],
+]);
+const recentActivity = recordList({ types: [...ACTIVITY_LABEL.keys()] }, 8);
 
 /** Recent decisions and the items that need the owner. */
 export function AttentionTile() {
   const recent = useProjection(recentActivity);
   const attention = useCall(attentionAction, {}, { refreshOn: { types: ["rin.attention.*"] } });
   return (
-    <section data-slot="rin-tile" className="desk-section"><h2>Что сделал главный агент</h2>
-      <PageLink to="/rin">Rin →</PageLink>
+    <section data-slot="rin-tile" className="desk-section"><h2>Последние действия Рин</h2>
+      <PageLink to="/rin">Открыть Рин →</PageLink>
       {attention.error ? <p role="alert">{attention.error.message}</p> : attention.data && <p>{tileText(attention.data.items)}</p>}
-      {!recent.length && <p>В последних записях журнала действий Rin нет.</p>}
-      <ol>{recent.toReversed().map(record => {
+      {!recent.length && <p>Заметных действий пока нет.</p>}
+      {recent.length > 0 && <ul className="space-y-2">{recent.toReversed().map((record) => {
         const data = (record.data ?? {}) as Record<string, unknown>;
-        const label = [data.text, data.reason, data.decision, data.key].find(x => typeof x === "string" && x);
-        return <li key={record.id}><time>{new Date(record.at).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}</time> {String(label ?? record.type)}</li>;
-      })}</ol></section>
+        const detail = typeof data["text"] === "string" ? data["text"] : undefined;
+        return <li key={record.id} className="text-sm">
+          <time className="mr-2 text-muted-foreground">{new Date(record.at).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}</time>
+          {ACTIVITY_LABEL.get(record.type)}
+          {detail ? <p className="break-words text-muted-foreground">{detail}</p> : null}
+        </li>;
+      })}</ul>}
+    </section>
   );
 }

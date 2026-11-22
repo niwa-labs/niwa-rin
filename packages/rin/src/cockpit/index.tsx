@@ -7,7 +7,7 @@ import { AttentionTile, RinPage } from "./page.tsx";
 export default definePlugin({
   id: "rin",
   setup(ctx) {
-    ctx.pages.add({ path: "/rin", title: "Rin", nav: { order: 10 }, component: RinPage });
+    ctx.pages.add({ path: "/rin", title: "Рин", nav: { order: 10 }, component: RinPage });
     ctx.slots.register("home.tile", { key: "rin-attention", component: AttentionTile });
   },
 });

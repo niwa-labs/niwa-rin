@@ -21,28 +21,28 @@ test("what waits comes first, then what she told him, then what is closed, newes
 });
 
 test("each item says why it waits and how often its occasion came up", () => {
-  expect(whyText(item(1, "held", { why: "next-contact" }))).toBe("for your next contact");
-  expect(whyText(item(1, "held", { why: "quiet-hours" }))).toBe("after your quiet hours");
-  expect(whyText(item(1, "held", { why: "ceiling", count: 3 }))).toBe("past the safety ceiling · came up 3 times");
-  expect(whyText(item(1, "held", { why: "undelivered" }))).toBe("could not reach you");
-  expect(whyText(item(1, "sending"))).toBe("on its way");
-  expect(whyText(item(1, "said", { count: 1 }))).toBe("told you");
+  expect(whyText(item(1, "held", { why: "next-contact" }))).toBe("При следующем разговоре");
+  expect(whyText(item(1, "held", { why: "quiet-hours" }))).toBe("После тихих часов");
+  expect(whyText(item(1, "held", { why: "ceiling", count: 3 }))).toBe("Достигнут лимит уведомлений · повторов: 3");
+  expect(whyText(item(1, "held", { why: "undelivered" }))).toBe("Доставка не удалась");
+  expect(whyText(item(1, "sending"))).toBe("Отправляется");
+  expect(whyText(item(1, "said", { count: 1 }))).toBe("Доставлено");
 });
 
 test("the tile counts what waits for him", () => {
-  expect(tileText([])).toBe("Nothing waits for you");
-  expect(tileText([item(1, "held"), item(2, "said")])).toBe("1 thing waits for you");
-  expect(tileText([item(1, "held"), item(2, "sending"), item(3, "held")])).toBe("3 things wait for you");
+  expect(tileText([])).toBe("Нет отложенных сообщений");
+  expect(tileText([item(1, "held"), item(2, "said")])).toBe("Одно отложенное сообщение");
+  expect(tileText([item(1, "held"), item(2, "sending"), item(3, "held")])).toBe("Отложенные сообщения: 3");
 });
 
 test("the charter shows what waits for his word first, then the rules, then the rest", () => {
   const rule = (n: number, status: RuleView["status"]): RuleView => ({ rule: `rule-00000000${n}0`, about: "tone", text: `rule ${n}`, status, corrections: Array.from({ length: n }, (_, i) => `cor-000000000${i}`) });
   const rows = charterRows([rule(1, "ruled"), rule(2, "declined"), rule(3, "proposed"), rule(4, "retired")]);
   expect(rows.map((row) => [row.text, row.label, row.corrections])).toEqual([
-    ["rule 3", "waits for your word", 3],
-    ["rule 1", "in force", 1],
-    ["rule 2", "declined", 2],
-    ["rule 4", "retired", 4],
+    ["rule 3", "Ждёт подтверждения", 3],
+    ["rule 1", "Действует", 1],
+    ["rule 2", "Отклонено", 2],
+    ["rule 4", "Снято", 4],
   ]);
 });
 
@@ -61,8 +61,8 @@ test("the conversation reads oldest first, with where each of his messages stand
     { id: "msg-000003", from: "owner", text: "And the docs", at: 4000, delivery: "waiting" },
   ]);
   expect(rows.map((row) => [row.who, row.text, row.state])).toEqual([
-    ["You", "Review the migration", "delivered to her"],
-    ["Rin", "Done: two comments", undefined],
-    ["You", "And the docs", "waiting in her inbox"],
+    ["Вы", "Review the migration", "Доставлено Рин"],
+    ["Рин", "Done: two comments", undefined],
+    ["Вы", "And the docs", "Ждёт обработки"],
   ]);
 });

@@ -9,12 +9,13 @@ import { commitmentList } from "@niwa-labs/commitments/records";
 import { actionName } from "@niwa-labs/core";
 import { memory } from "@niwa-labs/memory";
 import { requests } from "@niwa-labs/requests";
+import { requestOpen } from "@niwa-labs/requests/records";
 import { memoryTop } from "@niwa-labs/memory/records";
 import { plugin } from "@niwa-labs/plugin";
 import { createNiwa, messages, sessions, tempHome, timers, unreadable, unsendable } from "@niwa-labs/testing";
 import { RunFinished, RunStarted } from "@niwa-labs/workflow/records";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, selfHistoryAction, tellAction } from "../src/cockpit/actions.ts";
+import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, openQuestionsAction, retireAction, selfHistoryAction, tellAction } from "../src/cockpit/actions.ts";
 import { rinAttention, rinCharter, rinCharterRetire, rinConversation, rinDismiss, rinSelfHistory } from "../src/records.ts";
 import { rinPlugin } from "../src/plugin.ts";
 
@@ -29,6 +30,7 @@ const pairs = [
   [agentsAction, agentList],
   [commitmentsAction, commitmentList],
   [memoryAction, memoryTop],
+  [openQuestionsAction, requestOpen],
 ] as const;
 
 for (const [copy, real] of pairs) {

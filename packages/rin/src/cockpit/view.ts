@@ -4,11 +4,11 @@ import type { AgentView, AttentionView, ConversationMessage, RuleView } from "./
 
 /** The items of her attention, as the page groups them. */
 export interface AttentionGroups {
-  /** What waits for him, or is on its way. */
+  /** What waits for him, or is Отправляется. */
   readonly waiting: AttentionView[];
   /** What she told him, now or at a contact. */
   readonly told: AttentionView[];
-  /** What was dropped with its occasion or waved away. */
+  /** What was dropped with its occasion or Скрыто. */
   readonly closed: AttentionView[];
 }
 
@@ -20,33 +20,33 @@ export function attentionGroups(items: readonly AttentionView[]): AttentionGroup
 }
 
 const WHY: Record<NonNullable<AttentionView["why"]>, string> = {
-  "next-contact": "for your next contact",
-  "quiet-hours": "after your quiet hours",
-  ceiling: "past the safety ceiling",
-  undelivered: "could not reach you",
+  "next-contact": "При следующем разговоре",
+  "quiet-hours": "После тихих часов",
+  ceiling: "Достигнут лимит уведомлений",
+  undelivered: "Доставка не удалась",
 };
 
 const STATUS: Record<AttentionView["status"], string> = {
-  held: "waits",
-  sending: "on its way",
-  unsure: "may have reached you",
-  said: "told you",
-  brought: "brought up when you came",
-  dropped: "no longer holds",
-  dismissed: "waved away",
+  held: "Отложено",
+  sending: "Отправляется",
+  unsure: "Доставка не подтверждена",
+  said: "Доставлено",
+  brought: "Обсуждено при разговоре",
+  dropped: "Потеряло актуальность",
+  dismissed: "Скрыто",
 };
 
 /** Why an item stands where it does, and how often its occasion came up. */
 export function whyText(item: AttentionView): string {
   const why = item.status === "held" && item.why !== undefined ? WHY[item.why] : STATUS[item.status];
-  return item.count !== undefined && item.count > 1 ? `${why} · came up ${item.count} times` : why;
+  return item.count !== undefined && item.count > 1 ? `${why} · повторов: ${item.count}` : why;
 }
 
 /** The tile on the home page. */
 export function tileText(items: readonly AttentionView[]): string {
   const waiting = attentionGroups(items).waiting.length;
-  if (waiting === 0) return "Nothing waits for you";
-  return waiting === 1 ? "1 thing waits for you" : `${waiting} things wait for you`;
+  if (waiting === 0) return "Нет отложенных сообщений";
+  return waiting === 1 ? "Одно отложенное сообщение" : `Отложенные сообщения: ${waiting}`;
 }
 
 /** One rule as the page lists it. */
@@ -60,9 +60,9 @@ export interface CharterRow {
 }
 
 const RULE_ORDER: Record<RuleView["status"], number> = { proposed: 0, ruled: 1, declined: 2, retired: 3 };
-const RULE_LABEL: Record<RuleView["status"], string> = { proposed: "waits for your word", ruled: "in force", declined: "declined", retired: "retired" };
+const RULE_LABEL: Record<RuleView["status"], string> = { proposed: "Ждёт подтверждения", ruled: "Действует", declined: "Отклонено", retired: "Снято" };
 
-/** Her charter: what waits for his word first, then the rules in force, then the rest. */
+/** Her charter: what waits for his word first, then the rules Действует, then the rest. */
 export function charterRows(rules: readonly RuleView[]): CharterRow[] {
   return rules
     .map((rule, index) => ({ rule, index }))
@@ -83,10 +83,10 @@ export function ledAgents<T extends Pick<AgentView, "name">>(agents: readonly T[
 }
 
 const DELIVERY: Record<NonNullable<ConversationMessage["delivery"]>, string> = {
-  waiting: "waiting in her inbox",
-  delivered: "delivered to her",
-  unsent: "not delivered",
-  "possibly-sent": "may not have reached her",
+  waiting: "Ждёт обработки",
+  delivered: "Доставлено Рин",
+  unsent: "Не доставлено",
+  "possibly-sent": "Доставка не подтверждена",
 };
 
 /** One line of the conversation: who spoke, what, and for what he wrote, where it stands. */
@@ -106,7 +106,7 @@ export function conversationRows(messages: readonly ConversationMessage[]): Conv
     .map((message) => ({
       id: message.id,
       ...(message.turn === undefined ? {} : { turn: message.turn }),
-      who: message.from === "owner" ? "You" : "Rin",
+      who: message.from === "owner" ? "Вы" : "Рин",
       text: message.text,
       at: message.at,
       ...(message.delivery === undefined ? {} : { state: DELIVERY[message.delivery] }),

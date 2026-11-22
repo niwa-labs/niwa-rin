@@ -87,6 +87,22 @@ export const commitmentsAction = {
   output: z.object({ items: z.array(z.object({ id: z.string(), description: z.string(), status: z.string(), due: z.number().optional() })) }),
 } as const;
 
+export const openQuestionsAction = {
+  name: "request.open",
+  input: z.object({ to: z.object({ kind: z.literal("owner") }) }),
+  output: z.object({
+    requests: z.array(z.union([
+      z.object({ kind: z.literal("paused") }),
+      z.object({
+        id: z.string(),
+        question: z.string(),
+        from: z.object({ kind: z.string(), id: z.string().optional() }).optional(),
+        input: z.object({ title: z.string() }),
+      }),
+    ])),
+  }),
+} as const;
+
 export const memoryAction = {
   name: "memory.top",
   input: z.object({ memory: z.string() }),
@@ -102,7 +118,7 @@ export const selfHistoryAction = {
   output: z.object({
     mode: z.enum(["off", "ask", "free"]),
     edits: z.array(z.object({
-      edit: z.string(), plugin: z.string(), hash: z.string(), why: z.string(),
+      edit: z.string(), plugin: z.string(), module: z.string().optional(), hash: z.string(), why: z.string(),
       mode: z.enum(["ask", "free"]), status: z.string(), detail: z.string().optional(),
     })),
     installed: z.array(Installation),
