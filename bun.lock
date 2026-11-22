@@ -13,7 +13,7 @@
     },
     "packages/rin": {
       "name": "@niwa-labs/rin",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@niwa-labs/agent": "*",
         "@niwa-labs/cockpit-sdk": "*",
