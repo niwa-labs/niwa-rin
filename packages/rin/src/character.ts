@@ -109,6 +109,8 @@ export const HANDS = [
   "memory.list",
   "memory.search",
   "memory.page.write",
+  "memory.page.item.put",
+  "memory.page.item.remove",
   "memory.page.get",
   "memory.top",
   "memory.lift",
