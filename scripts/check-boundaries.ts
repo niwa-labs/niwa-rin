@@ -265,7 +265,7 @@ const UMBRELLA_DEPS: Record<string, EntryAllowance> = Object.fromEntries(
 export const GRAPH: Readonly<Record<string, PackageSpec>> = {
   ...NIWA_CORE_GRAPH,
   ...OTHER_REPOS_GRAPH,
-  niwa: leaf("umbrella", UMBRELLA_DEPS),
+  "@niwa-labs/niwa": leaf("umbrella", UMBRELLA_DEPS),
 };
 
 export const TESTING_PACKAGE = "@niwa-labs/testing";
@@ -299,16 +299,12 @@ type Rule =
   | "plugin-entry"
   | "cockpit-entry";
 
-/** Splits `@niwa-labs/x/sub` or `niwa/sub` into a package name and an export key. */
+/** Splits `@niwa-labs/x/sub` into a package name and an export key. */
 export function parseSpecifier(specifier: string): { name: string; entry: string } | null {
   const parts = specifier.split("/");
   if (parts[0] === "@niwa-labs" && parts.length >= 2) {
     const rest = parts.slice(2).join("/");
     return { name: `@niwa-labs/${parts[1]}`, entry: rest === "" ? "." : `./${rest}` };
-  }
-  if (parts[0] === "niwa") {
-    const rest = parts.slice(1).join("/");
-    return { name: "niwa", entry: rest === "" ? "." : `./${rest}` };
   }
   return null;
 }

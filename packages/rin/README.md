@@ -13,7 +13,7 @@ plugins a host installs after the agents module: a memory, commitments,
 delegate answering for `agent:rin`, and Rin herself.
 
 ```ts
-import { defaultComposition, telegram } from "niwa";
+import { defaultComposition, telegram } from "@niwa-labs/niwa";
 import { RIN_AGENT, addressingOf, rin } from "@niwa-labs/rin";
 
 const surface = telegram({ token, owner, speaksFor: "owner", agent: RIN_AGENT });
