@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
+import { PageLink, useAction, useCall, useViewer, recordList, useProjection } from "@niwa-labs/cockpit-sdk";
 import { Badge, Button } from "@niwa-labs/ui-kit";
 
 import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, retireAction, selfHistoryAction, tellAction, uninstallAction } from "./actions.ts";
@@ -256,12 +256,21 @@ export function RinPage() {
   );
 }
 
-/** The tile on the home page: how much waits for him. */
+const recentActivity = recordList({ types: ["rin.*"] }, 8);
+
+/** Recent decisions and the items that need the owner. */
 export function AttentionTile() {
+  const recent = useProjection(recentActivity);
   const attention = useCall(attentionAction, {}, { refreshOn: { types: ["rin.attention.*"] } });
   return (
-    <div data-slot="rin-tile" className="rounded-lg border bg-card px-3 py-2 text-sm">
-      <span className="font-medium">Rin</span> · {attention.data === undefined ? "…" : tileText(attention.data.items)}
-    </div>
+    <section data-slot="rin-tile" className="desk-section"><h2>Что сделал главный агент</h2>
+      <PageLink to="/rin">Rin →</PageLink>
+      {attention.error ? <p role="alert">{attention.error.message}</p> : attention.data && <p>{tileText(attention.data.items)}</p>}
+      {!recent.length && <p>В последних записях журнала действий Rin нет.</p>}
+      <ol>{recent.toReversed().map(record => {
+        const data = (record.data ?? {}) as Record<string, unknown>;
+        const label = [data.text, data.reason, data.decision, data.key].find(x => typeof x === "string" && x);
+        return <li key={record.id}><time>{new Date(record.at).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}</time> {String(label ?? record.type)}</li>;
+      })}</ol></section>
   );
 }
