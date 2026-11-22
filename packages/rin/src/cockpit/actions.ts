@@ -36,6 +36,22 @@ export const attentionAction = {
   output: z.object({ items: z.array(AttentionView) }),
 } as const;
 
+const CaseView = z.object({ case: z.string(), subject: z.string(), expected: z.string(), due: z.number() });
+export type CaseView = z.infer<typeof CaseView>;
+
+export const caseListAction = {
+  name: "rin.case.list",
+  input: z.object({}),
+  output: z.object({ cases: z.array(CaseView) }),
+} as const;
+
+const CaseKey = z.object({ case: z.string().regex(/^case-[0-9a-f]{10}$/) });
+export const caseCloseAction = {
+  name: "rin.case.close",
+  input: CaseKey,
+  output: CaseKey,
+} as const;
+
 export const dismissAction = {
   name: "rin.attention.dismiss",
   input: z.object({ item: z.string(), reason: z.string().optional() }),

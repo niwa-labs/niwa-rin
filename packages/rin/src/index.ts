@@ -13,4 +13,6 @@ export type { Core, RinDefinitionOptions } from "./character.ts";
 export { DEFAULT_CEILING, DEFAULT_QUIET, inQuietHours, quietEnds } from "./attention.ts";
 export type { Ceiling, QuietHours } from "./attention.ts";
 export { DEFAULT_RULE_AFTER } from "./charter.ts";
+export { CaseClosed, CaseTracked, rinCaseClose, rinCaseList, rinCaseTrack } from "./case-records.ts";
+export type { CaseId, CaseSignal } from "./case-records.ts";
 export * from "./records.ts";

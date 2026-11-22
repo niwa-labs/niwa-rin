@@ -79,6 +79,26 @@ next contact, tell him now, or insist.
 - She decides about a fact that is no occasion by its turn id, which
   `rin.inbox` lists.
 
+## Open cases
+
+Rin and the owner can record a matter to watch with `rin.case.track`. Give
+it a `subject`, the reply or event `expected`, and a `due` time in Unix
+milliseconds. Use the returned case ID with `rin.case.close` to settle it
+quietly when the result arrives elsewhere. `rin.case.list` and the briefing
+show open cases in deadline order.
+
+For automatic closure, give `signal: { kind: "request-answered", request }`
+with the Niwa request ID, or `signal: { kind: "agent-replied", agent, turn }`
+with the agent and its turn ID. The matching journal record closes the case
+even if the answer was already recorded. Answers that cancel a request leave
+the case open. For other results, close the case explicitly when it is settled.
+
+At the deadline an open case produces one occasion. Rin decides with
+`rin.attend`, including whether to speak at all. Quiet hours, the safety
+ceiling and ordinary notification deduplication apply. Closing a case
+settles its timer and drops any reminder still waiting for delivery.
+The journal preserves the deadline and closure across host restarts.
+
 ## Corrections and the charter
 
 A correction is `rin.corrected { about, what }`. The owner writes one with
@@ -146,4 +166,5 @@ The journal keeps each proposal, claim and outcome. The owner can uninstall a cu
 `@niwa-labs/rin/cockpit` is her page at `/rin`: the conversation with her (his
 messages with where each stands, and what she wrote to him), writing to her, what she holds
 and told, her charter, her promises, the top of her memory and the agents she
-leads; and a home tile with what waits for the owner.
+leads. The owner can see and close open cases on the page. A home tile shows
+what waits for the owner.

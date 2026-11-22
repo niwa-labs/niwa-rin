@@ -5,8 +5,8 @@ import { useState } from "react";
 import { EntityLink, PageLink, useAction, useCall, useViewer, recordList, useProjection } from "@niwa-labs/cockpit-sdk";
 import { Button, CopyValue, FileRef, Markdown } from "@niwa-labs/ui-kit";
 
-import { agentsAction, attentionAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, openQuestionsAction, retireAction, selfHistoryAction, tellAction, uninstallAction } from "./actions.ts";
-import type { AttentionView } from "./actions.ts";
+import { agentsAction, attentionAction, caseCloseAction, caseListAction, charterAction, commitmentsAction, conversationAction, dismissAction, memoryAction, openQuestionsAction, retireAction, selfHistoryAction, tellAction, uninstallAction } from "./actions.ts";
+import type { AttentionView, CaseView } from "./actions.ts";
 import { attentionGroups, charterRows, conversationRows, ledAgents, tileText, whyText } from "./view.ts";
 
 const RIN = "rin";
@@ -75,7 +75,7 @@ function Conversation() {
 }
 
 const OCCASION_LABEL: Readonly<Record<string, string>> = {
-  agent: "Агент", ci: "Проверки", task: "Задача", question: "Вопрос", workflow: "Сценарий",
+  agent: "Агент", case: "Открытое дело", ci: "Проверки", task: "Задача", question: "Вопрос", workflow: "Сценарий",
 };
 
 function Item({ item, owner }: { item: AttentionView; owner: boolean }) {
@@ -117,6 +117,42 @@ function Attention() {
       </Section>
       {groups.told.length ? <details className="space-y-2"><summary className="cursor-pointer text-sm font-medium">История уведомлений ({groups.told.length})</summary>{list(groups.told)}</details> : null}
     </>
+  );
+}
+
+function CaseRow({ item, canClose }: { item: CaseView; canClose: boolean }) {
+  const close = useAction(caseCloseAction);
+  return (
+    <li className="flex min-w-0 flex-wrap items-start gap-2 py-2">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="break-words text-sm font-medium">{item.subject}</p>
+        <p className="whitespace-pre-wrap break-words text-sm">Ждём {item.expected}</p>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <time dateTime={new Date(item.due).toISOString()}>Срок {new Date(item.due).toLocaleString("ru")}</time>
+          <CopyValue value={item.case} />
+        </div>
+      </div>
+      {canClose ? (
+        <Button type="button" variant="outline" size="sm" disabled={close.isPending || close.isSuccess} onClick={() => close.mutate({ case: item.case })}>
+          Закрыть дело
+        </Button>
+      ) : null}
+      {close.isError ? <p role="alert" className="w-full text-xs text-destructive">{close.error.message}</p> : null}
+    </li>
+  );
+}
+
+function OpenCases() {
+  const viewer = useViewer();
+  const open = useCall(caseListAction, {}, { refreshOn: { types: ["rin.case.*", "request.answered", "agent.turn.replied"] } });
+  if (open.isPending) return <Quiet>Загружаем дела…</Quiet>;
+  if (open.isError) return <p role="alert" className="text-sm text-destructive">{open.error.message}</p>;
+  if (open.data.cases.length === 0) return <Quiet>Открытых дел пока нет.</Quiet>;
+  const canClose = viewer.can(caseCloseAction.name);
+  return (
+    <ul className="divide-y rounded-lg border bg-card px-3">
+      {open.data.cases.map((item) => <CaseRow key={item.case} item={item} canClose={canClose} />)}
+    </ul>
   );
 }
 
@@ -302,7 +338,8 @@ function SelfEdits() {
 }
 
 export function RinPage() {
-  const { owner } = useViewer();
+  const viewer = useViewer();
+  const { owner } = viewer;
   return (
     <article className="desk-page p-4">
       <h1>Рин</h1>
@@ -310,6 +347,11 @@ export function RinPage() {
       <Section title="Поручения и обязательства">
         <Promises />
       </Section>
+      {owner && viewer.can(caseListAction.name) ? (
+        <Section title="Открытые дела">
+          <OpenCases />
+        </Section>
+      ) : null}
       <Attention />
       {owner ? (
         <Section title="Разговор">

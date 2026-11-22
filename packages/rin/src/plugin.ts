@@ -22,7 +22,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CORE_TYPES, OptionIdSchema, RecordRefused, action, actionName, agent as agentAddress, owner, recordId, seq } from "@niwa-labs/core";
+import { CORE_TYPES, OptionIdSchema, RecordRefused, action, actionName, agent as agentAddress, currentInvocation, owner, recordId, seq } from "@niwa-labs/core";
 import type { Address, Caller, JournalReader, Outcome, RecordType, Step, StoredRecord } from "@niwa-labs/core";
 import { AGENT, COCKPIT_MODULE, plugin, trigger } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi } from "@niwa-labs/plugin";
@@ -57,6 +57,7 @@ import {
   ATTACHED,
 } from "./attention.ts";
 import type { AttentionState, Ceiling, Item, QuietHours, Row } from "./attention.ts";
+import { caseKey, installCases, isCaseKey } from "./cases.ts";
 import { DEFAULT_RULE_AFTER, charterText, correctionView, dueFor, foldCharter, learnedRules, ruleView, ruledRules } from "./charter.ts";
 import type { CharterState, Correction } from "./charter.ts";
 import { RIN_AGENT, rinDefinition } from "./character.ts";
@@ -375,13 +376,46 @@ export function rinPlugin(options: RinOptions): Plugin {
         recovery: "repeat",
         effect: "record",
         world: "niwa",
-        run: (input, ctx) => notice((type, data) => ctx.emit(type, data), input, authorOf(ctx.caller), String(ctx.operationId)),
+        run: (input, ctx) => {
+          if (isCaseKey(input.key)) throw new RinRefusal("unknown", "tracked cases use rin.case actions");
+          return notice((type, data) => ctx.emit(type, data), input, authorOf(ctx.caller), String(ctx.operationId));
+        },
       }),
     );
+
+    const cases = installCases(api, {
+      journal,
+      serially,
+      checkCaller: (caller) => {
+        if (whoIs(caller) === "other") throw new RinRefusal("not-rin", "only Rin and the owner can manage her tracked cases");
+        return authorOf(caller);
+      },
+      makeId: (seed) => idOf("case", seed),
+      unknownCase: (id) => new RinRefusal("unknown", `there is no tracked case ${id}`),
+      openOccasion: async (step, item) => {
+        await notice((type, data, key) => step.emit(type, data, { key }), {
+          key: caseKey(item.case),
+          kind: "case",
+          text: `Tracked case ${item.case} reached its deadline: ${item.subject}\nExpected: ${item.expected}`,
+        }, { kind: "niwa", by: "rin.case" }, `due-${item.case}`);
+      },
+      endingOccasion: (id) => {
+        const key = caseKey(id);
+        const occasion = attention().open.get(key);
+        return occasion === undefined ? undefined : { key, occasion, notice: `closed-${id}`, from: { kind: "niwa", by: "rin.case" } };
+      },
+    });
+
+    const caseStillOpen = (subject: Subject, state = attention()): boolean => {
+      if (subject.kind !== "occasion") return true;
+      const occasion = state.occasions.get(subject.occasion);
+      return occasion === undefined || cases.hasOpenOccasion(occasion.key);
+    };
 
     // A new occasion reaches her inbox as a fact, with what she weighs before she decides. The plugin tells her,
     // not whoever noticed it: telling an agent is no right of theirs.
     api.on(OccasionOpened, { concurrency: { by: (data) => data.key } }, async (data, step, stored) => {
+      if (!cases.hasOpenOccasion(data.key)) return;
       const occurrence = { key: data.key, occasion: data.occasion };
       const previous = journal()?.find({ type: OccasionClaimed.name, field: "occasion", equals: data.occasion })[0];
       const text = previous === undefined ? [
@@ -432,7 +466,7 @@ export function rinPlugin(options: RinOptions): Plugin {
     const known = (subject: Subject, state: AttentionState): boolean => {
       if (subject.kind === "occasion") {
         const occasion = state.occasions.get(subject.occasion);
-        return occasion !== undefined && state.open.get(occasion.key) === occasion.occasion;
+        return occasion !== undefined && state.open.get(occasion.key) === occasion.occasion && cases.hasOpenOccasion(occasion.key);
       }
       return (journal()?.find({ type: AgentTurnQueued.name, field: "turn", equals: subject.turn }) ?? []).some((stored) => {
         const turn = stored.data as { agent?: unknown; turn?: unknown };
@@ -486,6 +520,17 @@ export function rinPlugin(options: RinOptions): Plugin {
     // What she says now goes out through the action of the composition, called by this plugin. What cannot reach
     // the owner waits for his next contact, and she is told.
     api.on(AttentionSending, { id: "say" }, async (data, step) => {
+      if (data.subject.kind === "occasion" && !caseStillOpen(data.subject)) {
+        // A closed case cancels an unsent reminder. Recover an already started delivery through
+        // the original step so its outcome remains visible and the channel's recovery rule applies.
+        const invocation = currentInvocation()?.invocation;
+        const started = invocation !== undefined && journal()?.find({ type: CORE_TYPES.stepIntent, field: "invocation", equals: invocation })
+          .some((row) => (row.data as { key?: string }).key === "say");
+        if (!started) {
+          await step.emit(AttentionDropped, { item: data.item, occasion: data.subject.occasion }, { key: "closed-case" });
+          return;
+        }
+      }
       if (say === undefined) {
         await step.emit(AttentionHeld, { ...data, until: "contact", why: "undelivered" }, { key: "hold" });
         return;
@@ -520,7 +565,7 @@ export function rinPlugin(options: RinOptions): Plugin {
       serially(async () => {
         const state = attention();
         const said = [...state.said];
-        for (const item of heldItems(state, "quiet-end")) {
+        for (const item of heldItems(state, "quiet-end").filter((item) => caseStillOpen(item.subject, state))) {
           const route = say === undefined ? { kind: "hold", why: "undelivered" } as const : sayNow({ at: stored.at, quiet, ceiling, said });
           const rule = item.rule === undefined ? {} : { rule: item.rule };
           if (route.kind === "say") {
@@ -543,7 +588,8 @@ export function rinPlugin(options: RinOptions): Plugin {
     /** What waits is brought up at a contact: what was held before it. */
     const bring = (step: Step, contact: Contact, before: number): Promise<void> =>
       serially(async () => {
-        const items = heldItems(attention()).filter((item) => item.seq < before);
+        const state = attention();
+        const items = heldItems(state).filter((item) => item.seq < before && caseStillOpen(item.subject, state));
         if (items.length > 0) await step.emit(AttentionBrought, { items: items.map((item) => item.item), contact });
       });
 
@@ -560,7 +606,7 @@ export function rinPlugin(options: RinOptions): Plugin {
       const state = attention();
       const lines = data.items.flatMap((id) => {
         const item = state.items.get(id);
-        return item === undefined ? [] : [`- ${item.text}${countText(state, item)}`];
+        return item === undefined || !caseStillOpen(item.subject, state) ? [] : [`- ${item.text}${countText(state, item)}`];
       });
       if (lines.length === 0) return;
       await step(agentNotify, { agent: RIN_AGENT, text: ["The owner is in touch now. What you held for him, to bring up as it fits:", ...lines].join("\n") });
@@ -674,13 +720,18 @@ export function rinPlugin(options: RinOptions): Plugin {
         recovery: "repeat",
         effect: "read",
         world: "niwa",
-        run: async (input) => {
+        run: async (input, ctx) => {
           if (input.agent !== RIN_AGENT) return { text: "" };
           const sections: string[] = [];
           const held = briefingText(attention());
           if (held !== "") sections.push(held);
           const waiting = [...charter().rules.values()].filter((rule) => rule.status === "proposed");
           if (waiting.length > 0) sections.push(["Rules of her charter that wait for your word:", ...waiting.map((rule) => `- ${rule.text}`)].join("\n"));
+          if (ctx.caller.kind !== "client" || whoIs(ctx.caller) !== "other") {
+            const tracked = cases.list();
+            if (tracked.length > 0) sections.push(["Open cases Rin is tracking:", ...tracked.map((item) =>
+              `- ${item.case} · ${item.subject} · by ${new Date(item.due).toISOString()} · waiting for ${item.expected}`)].join("\n"));
+          }
           return { text: sections.join("\n\n") };
         },
       }),

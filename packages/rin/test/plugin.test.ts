@@ -21,6 +21,7 @@ import type { NiwaApi, TestClock } from "@niwa-labs/testing";
 
 import { rinPlugin } from "../src/plugin.ts";
 import type { RinOptions } from "../src/plugin.ts";
+import { rinCaseClose, rinCaseList, rinCaseTrack } from "../src/case-records.ts";
 import {
   rinAttend,
   rinAttention,
@@ -240,6 +241,119 @@ async function world(options: Partial<RinOptions> = {}, start = NOON, resolvers?
 async function toldCount(w: World, n: number): Promise<void> {
   await eventually(() => w.told.length >= n, 5000, `Rin to be told ${n} facts, got ${w.told.length}`);
 }
+
+test("a request answer closes its case quietly and closing an overdue case drops held attention", async () => {
+  const night = new Date(2026, 10, 20, 23, 30).getTime();
+  const w = await world({}, night);
+  const request = await w.owner.call(requestAsk, {
+    to: { kind: "owner" }, question: "rin.case.answer" as never,
+    input: { kind: "choice", title: "Approve the build?", options: [{ id: "yes", label: "Yes", flavor: "plain" }] } as never,
+  });
+  const due = night + 60_000;
+  const answered = await w.owner.call(rinCaseTrack, {
+    subject: "Build approval", expected: "An answer to the Niwa request", due,
+    signal: { kind: "request-answered", request: request.id },
+  });
+  const overdue = await w.rin.call(rinCaseTrack, {
+    subject: "Shipment", expected: "Warehouse confirmation", due,
+  });
+  await expect(w.lead.call(rinCaseList, {})).rejects.toThrow("only Rin and the owner");
+  expect((await w.owner.call(rinBriefing, { agent: "rin" })).text).toContain("waiting for Warehouse confirmation");
+  await eventually(async () => (await w.records("timer.sleep.requested")).length === 2);
+  await w.owner.call(requestAnswer, { id: request.id, answer: { ids: ["yes"] } });
+  await eventually(async () => (await w.records("rin.case.closed")).length === 1);
+  expect((await w.records("rin.case.closed"))[0]?.data).toMatchObject({ case: answered.case, signalRecord: expect.any(String) });
+  await eventually(async () => (await w.records("timer.slept")).some((row) => (row.data as { key: string }).key.endsWith(answered.case)));
+  expect(await w.owner.call(rinCaseList, {})).toMatchObject({ cases: [{ case: overdue.case }] });
+  expect(w.told).toEqual([]);
+
+  await w.clock.advance(59_999);
+  expect(await w.records("rin.occasion.opened")).toHaveLength(0);
+  await w.clock.advance(1);
+  await toldCount(w, 1);
+  expect(w.told).toHaveLength(1);
+  expect(w.told[0]).toContain("Warehouse confirmation");
+  const subject = { kind: "occasion", occasion: w.lastOccasion() } as const;
+  const reminder = await w.rin.call(rinAttend, { subject, decision: "now", text: "Shipment still waits" });
+  expect(reminder).toMatchObject({ outcome: "held", why: "quiet-hours" });
+
+  await w.owner.call(rinCaseClose, { ...overdue, reason: "Warehouse confirmed outside Niwa" });
+  await w.rin.call(rinCaseClose, overdue);
+  await eventually(async () => (await w.owner.call(rinAttention, {})).items.some((item) => item.item === reminder.item && item.status === "dropped"));
+  await expect(w.rin.call(rinAttend, { subject, decision: "next-contact", text: "Stale reminder" })).rejects.toThrow("no such occasion");
+  await w.clock.advance(9 * HOUR);
+  await eventually(() => w.consolidated.length === 1);
+  expect(w.sent).toEqual([]);
+  expect((await w.owner.call(rinCaseList, {})).cases).toEqual([]);
+  expect(await w.records("rin.occasion.opened")).toHaveLength(1);
+  expect(await w.records("rin.case.closed")).toHaveLength(2);
+});
+
+test("an agent reply is matched by agent and turn, including one already recorded", async () => {
+  const w = await world();
+  const matched = { agent: "lead", turn: "msg-aaaaab", text: "Here is the outcome", replyTo: { channel: "cockpit", conversation: "cases" } };
+  await w.agents("agent.turn.replied", matched);
+  const tracked = await w.rin.call(rinCaseTrack, {
+    subject: "Agent status", expected: "A reply on the designated turn", due: NOON + HOUR,
+    signal: { kind: "agent-replied", agent: "lead", turn: "msg-aaaaac" },
+  });
+  await w.rin.call(rinCaseTrack, {
+    subject: "Earlier reply", expected: "A reply on the earlier turn", due: NOON + HOUR,
+    signal: { kind: "agent-replied", agent: "lead", turn: matched.turn },
+  });
+  await eventually(async () => (await w.records("rin.case.closed")).length === 1);
+  expect(await w.owner.call(rinCaseList, {})).toMatchObject({ cases: [{ case: tracked.case }] });
+  await w.agents("agent.turn.replied", { ...matched, turn: "msg-aaaaac" });
+  await eventually(async () => (await w.records("rin.case.closed")).length === 2);
+  expect((await w.owner.call(rinCaseList, {})).cases).toEqual([]);
+  expect(await w.records("rin.occasion.opened")).toHaveLength(0);
+});
+
+test("a case deadline missed while the host is down produces one attention occasion", async () => {
+  const first = await world();
+  const due = NOON + HOUR;
+  const tracked = await first.rin.call(rinCaseTrack, { subject: "Invoice", expected: "A receipt", due });
+  await eventually(async () => (await first.records("timer.sleep.requested")).length === 1);
+  await first.host.close();
+
+  const resumed = await world({}, due + 1, undefined, false, true, { prepareHome: async (path) => {
+    await cp(first.home, path, { recursive: true });
+  } });
+  await toldCount(resumed, 1);
+  expect(resumed.told[0]).toContain(tracked.case);
+  expect(await resumed.records("timer.slept")).toHaveLength(1);
+  expect(await resumed.records("rin.occasion.opened")).toHaveLength(1);
+  const subject = { kind: "occasion", occasion: resumed.lastOccasion() } as const;
+  const decision = { subject, decision: "next-contact", text: "Invoice still awaits a receipt" } as const;
+  const firstDecision = await resumed.rin.call(rinAttend, decision);
+  const replacement = await resumed.rin.call(rinAttend, decision);
+  expect(replacement.item).toBe(firstDecision.item);
+  await resumed.clock.advance(HOUR);
+  expect(resumed.told).toHaveLength(1);
+  expect(await resumed.records("rin.occasion.opened")).toHaveLength(1);
+  expect((await resumed.owner.call(rinAttention, { status: "held" })).items).toHaveLength(1);
+});
+
+test("retrying a paused deadline notification after case closure leaves it quiet", async () => {
+  const w = await world();
+  w.failTell.times = 1;
+  const tracked = await w.owner.call(rinCaseTrack, { subject: "Repair", expected: "Maintenance report", due: NOON });
+  let paused: string | undefined;
+  await eventually(async () => {
+    const open = await w.owner.call(requestOpen, {});
+    paused = open.requests.find((one): one is Extract<typeof one, { kind: "paused" }> => "kind" in one && one.kind === "paused")?.invocation;
+    return paused !== undefined;
+  });
+  await w.owner.call(rinCaseClose, tracked);
+  await w.retryPaused();
+  await eventually(async () => (await w.records(CORE_TYPES.invocationState)).some((row) => {
+    const data = row.data as { invocation: string; state: string };
+    return data.invocation === paused && data.state === "done";
+  }));
+  expect(w.told).toEqual([]);
+  expect(await w.records("rin.occasion.opened")).toHaveLength(1);
+  expect(await w.records("rin.occasion.ended")).toHaveLength(1);
+});
 
 test("Rin is offered to the agents module with a briefing section of her own", async () => {
   const w = await world();
