@@ -80,6 +80,7 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/harness-codex": lib(KIND_DEPS),
   "@niwa-labs/harness-pi": lib(KIND_DEPS),
   "@niwa-labs/harness-zcode": lib(KIND_DEPS),
+  "@niwa-labs/harness-opencode": lib(KIND_DEPS),
   "@niwa-labs/digest": lib({ "@niwa-labs/harness": "*" }),
   "@niwa-labs/sandbox": { ...lib(), entries: [".", "./profiles"] },
   "@niwa-labs/ui-kit": { ...lib(), entries: [".", "./theme.css"] },
