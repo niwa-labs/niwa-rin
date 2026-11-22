@@ -44,7 +44,7 @@ test("on a whole host she is the default agent, and what she holds is in her bri
     caller.kind === "client" && caller.principal?.kind === "session" && String(caller.principal.id) === RIN_AGENT ? agent(RIN_AGENT) : addressing(caller);
   const niwa = createNiwa({ home: home.path });
   cleanups.push(() => niwa.close());
-  niwa.use(messages({ bind }), requests({ bind }), tasks({ messages: { bind } }), timers([]), sessionsModule, agentsModule, workflow(), ...rin({ bind, harness: FAKE_HARNESS }));
+  niwa.use(messages({ bind }), requests({ bind }), tasks({ messages: { bind } }), timers([]), sessionsModule, agentsModule, workflow(), ...rin({ bind, harness: FAKE_HARNESS, charterMode: "auto" }));
   await niwa.serve();
   const owner = await connectAsOwner(home.path);
   cleanups.push(() => owner.close());
@@ -54,6 +54,7 @@ test("on a whole host she is the default agent, and what she holds is in her bri
   const got = await owner.call(agentGet, { agent: RIN_AGENT });
   expect(got.definition.tools).toBe("niwa-only");
   expect(got.definition.hands).toContain("rin.attend");
+  expect(got.definition.hands).toContain("rin.charter.learn");
 
   const noticed = await owner.call(rinNotice, { key: "task:t-1", kind: "task", text: "The review task is done" });
   const held = await rinSession.call(rinAttend, { subject: { kind: "occasion", occasion: noticed.occasion! }, decision: "next-contact", text: "The review is done: two comments" });

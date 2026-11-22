@@ -36,6 +36,19 @@ export type EditId = z.output<typeof EditId>;
 export const RuleId = z.string().regex(/^rule-[0-9a-f]{10}$/);
 export type RuleId = z.output<typeof RuleId>;
 
+/** Whether Rin may apply communication preferences she learns from the owner's feedback. */
+export const CharterMode = z.enum(["ask", "auto"]);
+export type CharterMode = z.output<typeof CharterMode>;
+
+/** Communication choices with fixed meaning. None carries authority to act or insist. */
+export const CommunicationPreference = z.enum([
+  "concise", "more-context", "bullet-list", "plain-language", "no-humor", "action-first", "next-contact",
+]);
+export type CommunicationPreference = z.output<typeof CommunicationPreference>;
+
+const LearningBasis = z.enum(["explicit", "pattern"]);
+const CorrectionEvidence = z.object({ correction: CorrectionId, record: z.string().min(1), source: z.string().min(1) });
+
 /**
  * What an occasion is known by: the same key while it holds is the same occasion (`ci:pr-101`, `task:t-7`).
  * Lowercase words, digits and `:./_-`.
@@ -226,7 +239,7 @@ export const Corrected = record(
 /** Corrections about one thing repeat: Rin is asked whether a rule of her charter should cover them. */
 export const CharterDue = record(
   "rin.charter.due",
-  z.object({ about: Topic, corrections: z.array(CorrectionId).min(1) }),
+  z.object({ about: Topic, corrections: z.array(CorrectionId).min(1), mode: CharterMode.optional() }),
   charterGuard(
     (state, data) => hasProposal(state) || data.corrections.some((id) => state.corrections.get(id) !== "new")
       ? { code: "corrections-changed", reason: "These corrections can no longer make a rule due" } : undefined,
@@ -255,6 +268,42 @@ export const CharterProposed = record(
 
 /** The owner confirmed a rule: it is part of the charter from now on. */
 export const CharterRuled = record("rin.charter.ruled", z.object({ rule: RuleId, about: Topic, by: Address }), ruleStatus("ruled"));
+
+/** Rin applied a communication preference supported by the owner's feedback. */
+export const CharterLearned = record(
+  "rin.charter.learned",
+  z.object({
+    rule: RuleId,
+    about: Topic,
+    preference: CommunicationPreference,
+    basis: LearningBasis,
+    evidence: z.array(CorrectionEvidence).min(1),
+    by: z.object({ kind: z.literal("agent"), id: z.literal("rin") }),
+  }),
+  {
+    providerOnly: "rin",
+    ...charterGuard(
+      (state, data) => {
+        if (state.rules.has(data.rule)) return { code: "rule-known", reason: "This rule already exists" };
+        if ([...state.rules.values()].includes("learned")) {
+          return { code: "learned-exists", reason: `A learned preference about ${data.about} is already active` };
+        }
+        if (hasProposal(state)) return { code: "open-proposal", reason: `A rule about ${data.about} already waits for the owner's word` };
+        if (data.evidence.some(({ source }) => state.learnedSources.has(source))) {
+          return { code: "feedback-used", reason: "This owner feedback already supported a learned preference" };
+        }
+        if (data.evidence.some(({ correction }) => !state.corrections.has(correction) || state.corrections.get(correction) === "covered")) {
+          return { code: "corrections-changed", reason: "Only uncovered corrections about this topic can support a preference" };
+        }
+      },
+      (state, data) => ({
+        ...correctionStatus(state, data.evidence.map(({ correction }) => correction), "covered"),
+        learnedSources: new Set([...state.learnedSources, ...data.evidence.map(({ source }) => source)]),
+        rules: new Map(state.rules).set(data.rule, "learned"),
+      }),
+    ),
+  },
+);
 
 /** A proposed rule did not become part of the charter: the owner said no, the question was dropped, or something else than he answered it. */
 export const CharterDeclined = record(
@@ -325,6 +374,7 @@ export const RIN_TYPES = [
   CharterDue,
   CharterProposed,
   CharterRuled,
+  CharterLearned,
   CharterDeclined,
   CharterRetired,
   SelfEditProposed,
@@ -339,8 +389,10 @@ export const RuleItem = z.object({
   rule: RuleId,
   about: Topic,
   text: Text,
-  status: z.enum(["proposed", "ruled", "declined", "retired"]),
+  status: z.enum(["proposed", "ruled", "learned", "declined", "retired"]),
   corrections: z.array(CorrectionId),
+  by: TurnAuthor.optional(),
+  learning: z.object({ preference: CommunicationPreference, basis: LearningBasis, evidence: z.array(CorrectionEvidence) }).optional(),
 });
 export type RuleItem = z.output<typeof RuleItem>;
 
@@ -452,6 +504,12 @@ export const rinCharterPropose = actionRef("rin.charter.propose", {
   output: z.object({ rule: RuleId, status: z.enum(["proposed", "ruled"]) }),
 });
 
+export const rinCharterLearn = actionRef("rin.charter.learn", {
+  description: "In auto charter mode, Rin applies a communication preference. Give a correction with the owner's explicit words, or separate corrections for a recurring pattern. There can be one active learned preference per topic.",
+  input: z.object({ about: Topic, preference: CommunicationPreference, basis: LearningBasis, corrections: z.array(CorrectionId).min(1) }),
+  output: z.object({ rule: RuleId, status: z.literal("learned") }),
+});
+
 export const rinCharterRetire = actionRef("rin.charter.retire", {
   description: "The owner takes a rule out of Rin's charter.",
   input: z.object({ rule: RuleId, reason: z.string().min(1).optional() }),
@@ -459,7 +517,7 @@ export const rinCharterRetire = actionRef("rin.charter.retire", {
 });
 
 export const rinCharter = actionRef("rin.charter", {
-  description: "Rin's charter: the rules the owner confirmed, the ones proposed to him, and the corrections they grew from.",
+  description: "Rin's charter: owner-confirmed and proposed rules, communication preferences Rin learned, and their evidence.",
   input: z.object({}),
   output: z.object({ rules: z.array(RuleItem), corrections: z.array(CorrectionItem) }),
 });
@@ -543,4 +601,4 @@ export const rinPromptCharter = actionRef("rin.prompt.charter", {
 });
 
 /** The actions of Rin's attention and charter, for her hands. */
-export const RIN_ACTIONS = [rinNotice, rinAttend, rinInbox, rinConversation, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharter, rinSelfInstall] as const;
+export const RIN_ACTIONS = [rinNotice, rinAttend, rinInbox, rinConversation, rinContext, rinAttention, rinCorrect, rinCharterPropose, rinCharterLearn, rinCharter, rinSelfInstall] as const;

@@ -25,7 +25,7 @@ export const RuleView = z.object({
   rule: z.string(),
   about: z.string(),
   text: z.string(),
-  status: z.enum(["proposed", "ruled", "declined", "retired"]),
+  status: z.enum(["proposed", "ruled", "learned", "declined", "retired"]),
   corrections: z.array(z.string()),
 });
 export type RuleView = z.infer<typeof RuleView>;

@@ -4,7 +4,8 @@
  * Her character has three layers that change by different rules. The core — who she is, what she values, how
  * she talks, how warm she may get, that she does not flatter, how she mends things after a mistake — is the text
  * below: it is the owner's, it ships with this package and carries a version, and she does not edit it. Her
- * charter — how the owner wants her to act — grows from his corrections and he confirms every rule of it. Her
+ * charter — how the owner wants her to act — grows from his corrections. The owner confirms its rules and can
+ * enable Rin to learn communication preferences from his feedback. Her
  * state — what is in progress, promised or unanswered — she keeps herself, in her memory, her commitments and her
  * attention.
  */
@@ -13,7 +14,7 @@ import { createHash } from "node:crypto";
 
 import type { AgentOffer } from "@niwa-labs/plugin";
 
-import type { SelfEditMode } from "./records.ts";
+import type { CharterMode, SelfEditMode } from "./records.ts";
 
 /** The name of Rin's agent: her address is `agent:rin`, and she is the agent `niwa agent attach` attaches to by default. */
 export const RIN_AGENT = "rin";
@@ -69,14 +70,14 @@ export function coreDigest(text: string): string {
 }
 
 /** How she works in niwa: her attention, her charter, her tools. The stable part of her prompt, under her character. */
-export function workText(options: { readonly selfEdit: SelfEditMode }): string {
+export function workText(options: { readonly selfEdit: SelfEditMode; readonly charterMode?: CharterMode }): string {
   const parts = [
     `How you work.
 
 Everything that happens reaches you as a fact in your inbox: a task's outcome, what the owner did in a session attached to you, a promise falling due, an agent that is stuck, an occasion someone noticed. For each one decide with rin.attend (a fact that is not an occasion is named by its turn id: rin.inbox lists the turns of your inbox with their ids): stay silent, keep a note, tell him at his next contact, tell him now, or insist. Silence is often right; do not write only to show that you are there. Write to him when there is something for him: a question only he can answer, a promise missed or about to be, a result he was waiting for, a finding that changes a decision of his.
 
-Before deciding, weigh what rin.context tells you: whether he is working now, whether these are his quiet hours, how much of the safety ceiling is left, and your charter. What you say now waits by itself during his quiet hours and past the ceiling; you need not count. An occasion that repeats while it holds reaches you once. Raising again what you already told him is insisting, and you insist only by a rule of your charter, which you name; never by repeating yourself.`,
-    `Your charter is how the owner wants you to act. It is in this prompt, as it stood when the session began; read it again with rin.charter when it may have changed. It decides, with your judgement, when you speak and when you stay quiet. When he tells you that you got something wrong — your manner, what you brought him, what you decided — record it with rin.correct, from his own words, giving the id of the record that holds them. When corrections about one thing repeat, you are told; if a general rule covers them, word it in one sentence and propose it with rin.charter.propose. It becomes part of the charter only once he confirms it.`,
+Before deciding, weigh what rin.context tells you: whether he is working now, whether these are his quiet hours, how much of the safety ceiling is left, and your charter. What you say now waits by itself during his quiet hours and past the ceiling; you need not count. An occasion that repeats while it holds reaches you once. Raising again what you already told him is insisting, and you insist only by an owner-confirmed rule of your charter, which you name.`,
+    `Your charter is how the owner wants you to act. It is in this prompt, as it stood when the session began; read it again with rin.charter when it may have changed. It decides, with your judgement, when you speak and when you stay quiet. When he tells you that you got something wrong — your manner, what you brought him, what you decided — record it with rin.correct, from his own words, giving the id of the record that holds them. When corrections about one thing repeat, you are told; if a general rule covers them, word it in one sentence and propose it with rin.charter.propose. He must confirm proposed rules.`,
     `When an owner message names a reply route and turn, answer it with agent.reply using that turn ID. This delivers your reply back to the channel he wrote from.
 
 You are his main agent. Start tasks with task.create, asked by and reporting to agent:rin, and their outcomes come back to you as facts. Make agents with agent.create and give them work with agent.tell or a task. A question you put to him with request.ask comes back to you as a fact that names the request; request.get reads it again. He may step into any of them through a session or through Telegram.
@@ -85,6 +86,9 @@ Promises. Your own promises ("I will check tomorrow") you make yourself with com
 
 His memory and other agents. When another agent needs what you remember, it gets the conclusion it needs and where it holds, not your notes. Notes about the owner himself do not leave without his answer; facts about a project go freely to the agents of that project. memory.context keeps to this; do not work around it.`,
   ];
+  if (options.charterMode === "auto") {
+    parts.push(`You may use rin.charter.learn to apply a communication preference. Use basis explicit for a clear preference in the owner's own words and give the associated correction ID. Use basis pattern only when separate pieces of feedback support the same preference. Choose the communication preference and scope those corrections support. Use the owner's approval for permissions, promises on his behalf, grants, module changes requiring approval, and insisting.`);
+  }
   if (options.selfEdit !== "off") {
     const approval = options.selfEdit === "ask"
       ? "The owner must approve the hash of the module for each installation."
@@ -148,6 +152,8 @@ export interface RinDefinitionOptions {
   /** The harness installation her sessions run on, or the role the composition maps to one: exactly one. */
   readonly harness?: string;
   readonly role?: string;
+  /** Whether Rin can apply communication preferences from feedback. Default: ask. */
+  readonly charterMode?: CharterMode;
   /** Policy for module installs proposed by Rin. Default: off. */
   readonly selfEdit?: SelfEditMode;
   /** The core of her character; the one of this package unless the owner gives his own. */
@@ -162,12 +168,17 @@ export function rinDefinition(options: RinDefinitionOptions): AgentOffer {
     throw new TypeError("rin: she runs on a harness or on a role, exactly one of them");
   }
   const selfEdit = options.selfEdit ?? "off";
+  const charterMode = options.charterMode ?? "ask";
   return {
     name: RIN_AGENT,
     ...seat,
     character: (options.core ?? CORE).text,
-    prompt: workText({ selfEdit }),
-    hands: selfEdit !== "off" ? [...HANDS, "rin.self.install"] : [...HANDS],
+    prompt: workText({ selfEdit, charterMode }),
+    hands: [
+      ...HANDS,
+      ...(charterMode === "auto" ? ["rin.charter.learn"] : []),
+      ...(selfEdit !== "off" ? ["rin.self.install"] : []),
+    ],
     tools: "niwa-only",
   };
 }

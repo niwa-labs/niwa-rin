@@ -59,8 +59,8 @@ export interface CharterRow {
   readonly corrections: number;
 }
 
-const RULE_ORDER: Record<RuleView["status"], number> = { proposed: 0, ruled: 1, declined: 2, retired: 3 };
-const RULE_LABEL: Record<RuleView["status"], string> = { proposed: "Ждёт подтверждения", ruled: "Действует", declined: "Отклонено", retired: "Снято" };
+const RULE_ORDER: Record<RuleView["status"], number> = { proposed: 0, ruled: 1, learned: 2, declined: 3, retired: 4 };
+const RULE_LABEL: Record<RuleView["status"], string> = { proposed: "Ждёт подтверждения", ruled: "Действует", learned: "Вывела Рин", declined: "Отклонено", retired: "Снято" };
 
 /** Her charter: what waits for his word first, then the rules Действует, then the rest. */
 export function charterRows(rules: readonly RuleView[]): CharterRow[] {

@@ -11,7 +11,7 @@
  * His corrections are written down (`rin.corrected`), whether he says them, she writes them from his words, or he
  * acts them out: changes a note of hers, cancels what she promised or decided, turns down or leaves unanswered
  * what she asked, waves away what she told him. Corrections about one thing that repeat ask her for a rule; the
- * rule she words is put to him, and only his yes makes it part of her charter.
+ * rules she proposes require his yes. In auto mode she can also learn communication preferences from his feedback.
  *
  * What she does reaches nobody with the rights of whoever told her something: the plugin's handlers carry her
  * decisions out, and her own actions check that it is she, or the owner, who calls them.
@@ -57,7 +57,7 @@ import {
   ATTACHED,
 } from "./attention.ts";
 import type { AttentionState, Ceiling, Item, QuietHours, Row } from "./attention.ts";
-import { DEFAULT_RULE_AFTER, charterText, correctionView, dueFor, foldCharter, ruleView, ruledRules } from "./charter.ts";
+import { DEFAULT_RULE_AFTER, charterText, correctionView, dueFor, foldCharter, learnedRules, ruleView, ruledRules } from "./charter.ts";
 import type { CharterState, Correction } from "./charter.ts";
 import { RIN_AGENT, rinDefinition } from "./character.ts";
 import type { Core } from "./character.ts";
@@ -73,6 +73,8 @@ import {
   AttentionUnsure,
   CharterDeclined,
   CharterDue,
+  CharterLearned,
+  CharterMode,
   CharterProposed,
   CharterRetired,
   CharterRuled,
@@ -93,6 +95,7 @@ import {
   rinAttention,
   rinBriefing,
   rinCharter,
+  rinCharterLearn,
   rinCharterPropose,
   rinCharterRetire,
   rinContext,
@@ -117,6 +120,8 @@ export interface RinOptions {
   /** The harness installation her sessions run on, or the role the composition maps to one: exactly one. */
   readonly harness?: string;
   readonly role?: string;
+  /** Whether Rin can apply communication preferences from feedback. Default: ask. */
+  readonly charterMode?: CharterMode;
   /** Policy for module installs proposed by Rin. Default: off. */
   readonly selfEdit?: SelfEditMode;
   /** The core of her character; the one of this package unless the owner gives his own. */
@@ -137,7 +142,7 @@ export interface RinOptions {
 export class RinRefusal extends Error {
   override name = "RinRefusal";
   constructor(
-    readonly code: "not-rin" | "not-owner" | "unknown" | "no-text" | "already-said" | "insist" | "open-proposal" | "not-his-words" | "self-edit-off" | "not-her-group" | "unreachable",
+    readonly code: "not-rin" | "not-owner" | "unknown" | "no-text" | "already-said" | "insist" | "open-proposal" | "not-his-words" | "charter-ask" | "charter-evidence" | "self-edit-off" | "not-her-group" | "unreachable",
     message: string,
   ) {
     super(message);
@@ -157,7 +162,7 @@ function firstLine(text: string, max = 160): string {
 
 /** The record types her attention is folded from. */
 const ATTENTION_TYPES = [OccasionOpened, OccasionRepeated, OccasionEnded, AttentionDecided, AttentionHeld, AttentionSending, AttentionSaid, AttentionUnsure, AttentionBrought, AttentionDropped, AttentionDismissed].map((type) => type.name as string);
-const CHARTER_TYPES = [Corrected, CharterDue, CharterProposed, CharterRuled, CharterDeclined, CharterRetired].map((type) => type.name as string);
+const CHARTER_TYPES = [Corrected, CharterDue, CharterProposed, CharterRuled, CharterLearned, CharterDeclined, CharterRetired].map((type) => type.name as string);
 
 /** The choices of a question to the owner that only his yes settles. */
 const CONFIRM = OptionIdSchema.parse("confirm");
@@ -208,10 +213,12 @@ const OwnerWroteInToRin = trigger(MessageReceived, { name: "message.received:own
 /** The Rin plugin. Install it after the agents module, which serves her, and with the plugins whose records she follows. */
 export function rinPlugin(options: RinOptions): Plugin {
   const selfEdit = SelfEditMode.parse(options.selfEdit ?? "off");
+  const charterMode = CharterMode.parse(options.charterMode ?? "ask");
   const definition = rinDefinition({
     ...(options.harness === undefined ? {} : { harness: options.harness }),
     ...(options.role === undefined ? {} : { role: options.role }),
     selfEdit,
+    charterMode,
     ...(options.core === undefined ? {} : { core: options.core }),
   });
   const quiet = options.quietHours ?? DEFAULT_QUIET;
@@ -235,7 +242,7 @@ export function rinPlugin(options: RinOptions): Plugin {
     });
     api.offer(AGENT, definition);
     api.offer(AGENT_BRIEFING, { title: "What Rin holds for you", action: rinBriefing.name });
-    // Her charter is part of the prompt of her sessions, read when each one starts: a rule confirmed since reaches the next.
+    // Her charter is read when each session starts.
     api.offer(AGENT_PROMPT_SECTION, { id: "charter", agent: RIN_AGENT, action: rinPromptCharter.name });
     // Her page in the cockpit: a client module, offered by the path of its source.
     api.offer(COCKPIT_MODULE, { id: "rin", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
@@ -246,6 +253,16 @@ export function rinPlugin(options: RinOptions): Plugin {
     const attention = (): AttentionState => foldAttention(rowsOf([...ATTENTION_TYPES, ATTACHED]), RIN_AGENT);
     const charter = (): CharterState => foldCharter(rowsOf(CHARTER_TYPES));
     const ruledIds = () => new Set<string>(ruledRules(charter()).map((rule) => rule.rule));
+
+    const charterGuidance = (): string => {
+      const state = charter();
+      const confirmed = charterText(ruledRules(state));
+      const learned = charterText(learnedRules(state));
+      return [
+        confirmed === "" ? undefined : `Your charter, the rules the owner confirmed:\n${confirmed}`,
+        learned === "" ? undefined : `Communication preferences you learned from the owner's feedback:\n${learned}\nApply these only to how you communicate. Follow owner-confirmed rules in a conflict. Insisting requires an owner-confirmed rule.`,
+      ].filter((one) => one !== undefined).join("\n\n") || "Your charter has no rules yet.";
+    };
 
     /** Wait for the answer requests accepts through an authenticated owner connection. */
     const askOwner = async (step: Step, asking: ReturnType<typeof confirmQuestion>, key: string): Promise<Verdict> => {
@@ -299,8 +316,7 @@ export function rinPlugin(options: RinOptions): Plugin {
       if (ends !== undefined) lines.push(`These are his quiet hours, until ${quiet.to}: what you say now waits until then.`);
       const left = ceilingLeft(attention().said, at, ceiling);
       if (left === 0) lines.push("The safety ceiling is reached: what you say now waits for his next contact.");
-      const rules = charterText(ruledRules(charter()));
-      lines.push(rules === "" ? "Your charter has no rules yet." : `Your charter:\n${rules}`);
+      lines.push(charterGuidance());
       return lines.join("\n");
     };
 
@@ -629,7 +645,7 @@ export function rinPlugin(options: RinOptions): Plugin {
             working: workingNow(rowsOf(PRESENCE_TYPES)),
             quiet: { now: inQuietHours(at, quiet), from: quiet.from, to: quiet.to, ...(ends === undefined ? {} : { ends }) },
             ceiling: { count: ceiling.count, windowMs: ceiling.windowMs, left: ceilingLeft(state.said, at, ceiling) },
-            charter: [...charter().rules.values()].filter((rule) => rule.status === "ruled" || rule.status === "proposed").map(ruleView),
+            charter: [...charter().rules.values()].filter((rule) => rule.status === "ruled" || rule.status === "learned" || rule.status === "proposed").map(ruleView),
             occasions: openOccasions(state),
             held: heldItems(state).map((item) => itemView(state, item)),
           };
@@ -677,8 +693,7 @@ export function rinPlugin(options: RinOptions): Plugin {
         world: "niwa",
         run: async (input) => {
           if (input.agent !== RIN_AGENT) return { text: "" };
-          const rules = charterText(ruledRules(charter()));
-          return { text: rules === "" ? "Your charter has no rules yet." : `Your charter, the rules the owner confirmed:\n${rules}` };
+          return { text: charterGuidance() };
         },
       }),
     );
@@ -697,32 +712,38 @@ export function rinPlugin(options: RinOptions): Plugin {
 
     // ---- corrections ----------------------------------------------------------------------------------------
 
-    /** Are these the owner's own words: a message he wrote, or a turn he wrote that holds a message? */
-    const wordsOf = (stored: StoredRecord): boolean => {
+    /** Read the same message ID from its envelope or the inbox turn that carries it. */
+    const ownerMessageId = (stored: StoredRecord): string | undefined => {
       if (stored.type === MessageSent.name || stored.type === MessageReceived.name) {
         const message = MessageEnvelope.safeParse(stored.data);
-        return message.success && message.data.from.kind === "owner" && message.data.body.text.trim() !== "";
+        if (message.success && message.data.from.kind === "owner" && message.data.body.text.trim() !== "") return message.data.id;
       }
       if (stored.type === AgentTurnQueued.name) {
         const turn = AgentTurnQueued.schema.safeParse(stored.data);
-        return turn.success && turn.data.kind === "message" && turn.data.author.kind === "owner" && turn.data.text.trim() !== "";
+        if (turn.success && turn.data.kind === "message" && turn.data.author.kind === "owner" && turn.data.text.trim() !== "") return turn.data.turn;
       }
-      return false;
     };
-    /**
-     * Does this id name a record that holds words the owner wrote: a record of the journal by its id (an emitted
-     * record's id has slashes in it), or a message by its own id (`msg-…`)? A record he merely wrote, an answer or a
-     * correction, holds no words of his to rest a correction on.
-     */
-    const isHisWords = (id: string): boolean => {
-      let byRecord: StoredRecord | undefined;
+
+    const byRecordId = (id: string): StoredRecord | undefined => {
       try {
-        byRecord = journal()?.get(recordId(id));
+        return journal()?.get(recordId(id));
       } catch {
-        byRecord = undefined; // not the shape of a record id
+        return undefined;
       }
-      const byMessage = (journal()?.since(seq(0), [MessageSent.name, MessageReceived.name]) ?? []).filter((stored) => (stored.data as { id?: unknown }).id === id);
-      return [...(byRecord === undefined ? [] : [byRecord]), ...byMessage].some(wordsOf);
+    };
+
+    /** The source may be a journal record ID or the corresponding owner message ID. */
+    const ownerWords = (id: string): { key: string; record: string } | undefined => {
+      const direct = byRecordId(id);
+      const candidates = direct === undefined ? [
+        ...(journal()?.find({ type: MessageSent.name, field: "id", equals: id }) ?? []),
+        ...(journal()?.find({ type: MessageReceived.name, field: "id", equals: id }) ?? []),
+        ...(journal()?.find({ type: AgentTurnQueued.name, field: "turn", equals: id }) ?? []),
+      ] : [direct];
+      for (const row of candidates) {
+        const key = ownerMessageId(row);
+        if (key !== undefined) return { key, record: String(row.id) };
+      }
     };
 
     api.action(
@@ -733,7 +754,7 @@ export function rinPlugin(options: RinOptions): Plugin {
         run: async (input, ctx) => {
           const who = whoIs(ctx.caller);
           if (who === "other") throw new RinRefusal("not-owner", "a correction is the owner's: only he, or Rin from his words, writes one");
-          if (who === "rin" && (input.source === undefined || !isHisWords(input.source))) {
+          if (who === "rin" && (input.source === undefined || ownerWords(input.source) === undefined)) {
             throw new RinRefusal("not-his-words", "Rin writes a correction only from the owner's own words: give the id of the record that holds them");
           }
           const correction = idOf("cor", String(ctx.operationId));
@@ -872,7 +893,7 @@ export function rinPlugin(options: RinOptions): Plugin {
       const due = dueFor(charter(), data.about, ruleAfter);
       if (due === undefined) return;
       try {
-        await step.emit(CharterDue, { about: data.about, corrections: due });
+        await step.emit(CharterDue, { about: data.about, corrections: due, ...(charterMode === "auto" ? { mode: charterMode } : {}) });
       } catch (error) {
         if (!(error instanceof RecordRefused) || error.code !== "corrections-changed") throw error;
       }
@@ -887,7 +908,9 @@ export function rinPlugin(options: RinOptions): Plugin {
           `The owner's corrections about ${data.about} repeat:`,
           ...lines,
           "",
-          "If one rule covers them, word it in one sentence and propose it with rin.charter.propose, naming these corrections. If none does, leave it.",
+          data.mode === "auto"
+            ? "If these separate reactions support a communication preference, use rin.charter.learn with basis pattern and the correction IDs. For an owner-confirmed rule, use rin.charter.propose. Leave the charter alone if the corrections support neither."
+            : "If one rule covers them, word it in one sentence and propose it with rin.charter.propose, naming these corrections. If none does, leave it.",
         ].join("\n"),
       });
     });
@@ -914,6 +937,54 @@ export function rinPlugin(options: RinOptions): Plugin {
         },
       }),
     );
+
+    api.action(action(rinCharterLearn, {
+      recovery: "repeat",
+      effect: "record",
+      world: "niwa",
+      run: async (input, ctx) => {
+        if (whoIs(ctx.caller) !== "rin") throw new RinRefusal("not-rin", "only Rin learns communication preferences");
+        const rule = idOf("rule", String(ctx.operationId));
+        if (journal()?.find({ type: CharterLearned.name, field: "rule", equals: rule })[0] !== undefined) {
+          return { rule, status: "learned" as const };
+        }
+        if (charterMode !== "auto") throw new RinRefusal("charter-ask", "learning communication preferences requires auto charter mode");
+
+        const evidence = new Map<string, { correction: string; record: string; source: string }>();
+        for (const id of new Set(input.corrections)) {
+          const row = journal()?.find({ type: Corrected.name, field: "correction", equals: id })[0];
+          const correction = row === undefined ? undefined : Corrected.schema.parse(row.data);
+          if (row === undefined || correction?.about !== input.about) {
+            throw new RinRefusal("charter-evidence", `Correction ${id} does not support topic ${input.about}`);
+          }
+          let proof = correction.source === undefined ? undefined : ownerWords(correction.source);
+          if (proof === undefined && correction.by.kind === "owner") proof = { key: String(row.id), record: String(row.id) };
+          if (proof === undefined && correction.by.kind === "niwa" && input.basis === "pattern" && correction.source !== undefined) {
+            const fact = byRecordId(correction.source);
+            if (fact !== undefined) proof = { key: String(fact.id), record: String(fact.id) };
+          }
+          if (proof === undefined) throw new RinRefusal("charter-evidence", `Correction ${id} needs a record of the owner's feedback`);
+          if (!evidence.has(proof.key)) evidence.set(proof.key, { correction: id, record: proof.record, source: proof.key });
+        }
+        const needed = input.basis === "explicit" ? 1 : Math.max(2, ruleAfter);
+        if (evidence.size < needed) throw new RinRefusal("charter-evidence", `Learning requires ${needed} distinct records of owner feedback`);
+
+        const existingPreference = () => learnedRules(charter()).find((one) => one.about === input.about && one.learning?.preference === input.preference);
+        const existing = existingPreference();
+        if (existing !== undefined) return { rule: existing.rule, status: "learned" as const };
+        try {
+          await ctx.emit(CharterLearned, {
+            rule, about: input.about, preference: input.preference, basis: input.basis, evidence: [...evidence.values()], by: { kind: "agent", id: RIN_AGENT },
+          });
+        } catch (error) {
+          if (!(error instanceof RecordRefused) || error.code !== "learned-exists") throw error;
+          const winner = existingPreference();
+          if (winner === undefined) throw error;
+          return { rule: winner.rule, status: "learned" as const };
+        }
+        return { rule, status: "learned" as const };
+      },
+    }));
 
     // A rule she proposed is put to the owner, and only his yes makes it part of the charter. She is told either way.
     api.on(CharterProposed, { id: "confirm-rule", filter: { "by.kind": "agent" }, concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {

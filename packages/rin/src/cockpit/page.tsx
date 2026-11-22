@@ -137,7 +137,7 @@ function Charter() {
             <p className="break-words text-sm">{row.text}</p>
             <p className="text-xs text-muted-foreground">{row.label} · {row.about} · поправок: {row.corrections}</p>
           </div>
-          {viewer.owner && (row.status === "ruled" || row.status === "proposed") ? (
+          {viewer.owner && (row.status === "ruled" || row.status === "proposed" || row.status === "learned") ? (
             <Button variant="outline" size="sm" disabled={retire.isPending} onClick={() => retire.mutate({ rule: row.rule })}>
               Снять правило
             </Button>

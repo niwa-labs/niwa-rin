@@ -37,10 +37,11 @@ test("the tile counts what waits for him", () => {
 
 test("the charter shows what waits for his word first, then the rules, then the rest", () => {
   const rule = (n: number, status: RuleView["status"]): RuleView => ({ rule: `rule-00000000${n}0`, about: "tone", text: `rule ${n}`, status, corrections: Array.from({ length: n }, (_, i) => `cor-000000000${i}`) });
-  const rows = charterRows([rule(1, "ruled"), rule(2, "declined"), rule(3, "proposed"), rule(4, "retired")]);
+  const rows = charterRows([rule(1, "ruled"), rule(2, "declined"), rule(3, "proposed"), rule(4, "retired"), rule(5, "learned")]);
   expect(rows.map((row) => [row.text, row.label, row.corrections])).toEqual([
     ["rule 3", "Ждёт подтверждения", 3],
     ["rule 1", "Действует", 1],
+    ["rule 5", "Вывела Рин", 5],
     ["rule 2", "Отклонено", 2],
     ["rule 4", "Снято", 4],
   ]);

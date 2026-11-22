@@ -43,7 +43,7 @@ Her character has three layers that change by different rules:
 | Layer | What | Who changes it |
 |---|---|---|
 | Core | Who she is, her values and voice, the ceiling on warmth, no flattery, how she mends things after a mistake | The owner only: `CORE` in this package, with a version a test pins to its words |
-| Charter | How the owner wants her to act: what matters to him, when to stay quiet, when to insist | Grows from his corrections; he confirms every rule |
+| Charter | How the owner wants her to act: what matters to him, when to stay quiet, when to insist | The owner confirms rules. In auto mode Rin can learn communication preferences from his feedback. |
 | State | What is in progress, promised or unanswered | She keeps it, in her memory, commitments and attention |
 
 The core is the constant section of her prompt, how she works the stable one.
@@ -88,10 +88,36 @@ note of hers, cancels a promise or revokes a decision of hers, turns down or
 leaves unanswered a question of hers, or waves away what she told him
 (`rin.attention.dismiss`).
 
-Two corrections about one thing that no rule covers (`ruleAfter`) ask her
-for a rule. She words it and proposes it with `rin.charter.propose`; the
-owner is asked, and only his own yes makes it part of the charter. A rule he
-proposes himself stands at once; `rin.charter.retire` takes one out.
+Two corrections about one topic (`ruleAfter`) prompt Rin to look for a
+pattern. Set `charterMode` in the host's `rin()` configuration.
+
+```ts
+...rin({ bind: addressingOf(base), role: "assistant", charterMode: "auto" })
+```
+
+- `ask` is the default. Rin proposes a rule with `rin.charter.propose`.
+  An owner-only answer approves it. A rule the owner writes directly
+  takes effect at once.
+- `auto` also lets Rin call `rin.charter.learn` for a communication
+  preference. Choose a supported behavior such as `concise`, `no-humor`
+  or `next-contact` for routine updates, and provide the topic and correction
+  IDs. Use `basis: "explicit"` for a clear statement in the owner's own
+  words and `basis: "pattern"` for at least two independent records of
+  feedback (`ruleAfter` can raise the threshold). A message and the inbox
+  turn that carries it count as one source.
+
+`rin.charter` shows the preference with Rin as its author and links each
+correction to its evidence in the journal. There is one active learned
+preference per topic. Repeating the same preference returns the existing
+rule. The owner can withdraw it with `rin.charter.retire` or from her
+Cockpit charter. Retired preferences stay in the history and the same
+source cannot reintroduce them. Active preferences survive restart. Switching
+to `ask` stops new learning and an outstanding approval still waits for the
+owner's answer in either mode.
+
+Owner-confirmed rules take precedence over learned preferences. Insisting
+requires an owner-confirmed rule. Approvals for promises on the owner's
+behalf, grants and module installation follow their existing policies.
 
 ## Leading the work
 

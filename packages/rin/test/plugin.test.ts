@@ -26,6 +26,7 @@ import {
   rinAttention,
   rinBriefing,
   rinCharter,
+  rinCharterLearn,
   rinCharterPropose,
   rinCharterRetire,
   rinPromptCharter,
@@ -654,6 +655,120 @@ test("repeated corrections ask her for a rule, and the owner's yes puts it in he
   await w.lead.call(rinNotice, { key: "ci:pr-3", kind: "ci", text: "CI is red on draft PR 3" });
   await toldCount(w, 3);
   expect(w.told[2]).toContain(`${proposed.rule} (attention.ci): Red CI on a draft PR is not worth telling`);
+});
+
+test("auto learns a communication preference from direct owner feedback and only the owner can retire it", async () => {
+  const w = await world({ charterMode: "auto" });
+  const { correction } = await w.owner.call(rinCorrect, { about: "tone.status", what: "Keep status updates short" });
+  const feedback = (await w.records("rin.corrected"))[0]!;
+  const input = { about: "tone.status", preference: "concise", basis: "explicit", corrections: [correction] } as const;
+  expect(w.offered.agents[0]?.hands).toContain("rin.charter.learn");
+  expect(w.offered.agents[0]?.hands).not.toContain("rin.self.install");
+  await expect(w.lead.call(rinCharterLearn, { ...input, corrections: [correction] })).rejects.toThrow("only Rin");
+  await expect(w.rin.call(rinCharterLearn, { ...input, about: "tone.review", corrections: [correction] })).rejects.toThrow("does not support");
+  const [learned, duplicate] = await Promise.all([
+    w.rin.call(rinCharterLearn, { ...input, corrections: [correction] }),
+    w.rin.call(rinCharterLearn, { ...input, corrections: [correction] }),
+  ]);
+  expect(learned).toEqual(duplicate);
+  expect(await w.records("rin.charter.learned")).toHaveLength(1);
+  expect(await w.records("rin.charter.ruled")).toHaveLength(0);
+  expect(await w.records("request.created")).toHaveLength(0);
+  expect((await w.owner.call(rinCharter, {})).rules).toMatchObject([{
+    rule: learned.rule, status: "learned", by: { kind: "agent", id: "rin" }, corrections: [correction],
+    learning: { preference: "concise", basis: "explicit", evidence: [{ correction, record: String(feedback.id) }] },
+  }]);
+  const guidance = (await w.owner.call(rinPromptCharter, { agent: "rin" })).text;
+  expect(guidance).toContain("Communication preferences you learned");
+  expect(guidance).toContain("Keep communication about this topic brief.");
+  expect(guidance).not.toContain("the rules the owner confirmed");
+
+  const { occasion } = await w.owner.call(rinNotice, { key: "case:renewal", kind: "task", text: "Renewal needs a decision" });
+  const subject = { kind: "occasion", occasion: occasion! } as const;
+  await w.rin.call(rinAttend, { subject, decision: "now", text: "Decide whether to renew" });
+  await eventually(() => w.sent.length === 1);
+  await expect(w.rin.call(rinAttend, { subject, decision: "insist", text: "Decide now", rule: learned.rule })).rejects.toThrow("confirmed");
+
+  await expect(w.rin.call(rinCharterRetire, { rule: learned.rule })).rejects.toThrow("only the owner");
+  await w.owner.call(rinCharterRetire, { rule: learned.rule, reason: "More detail now" });
+  expect((await w.owner.call(rinPromptCharter, { agent: "rin" })).text).not.toContain(learned.rule);
+  expect((await w.owner.call(rinCharter, {})).rules[0]?.status).toBe("retired");
+  await expect(w.rin.call(rinCharterLearn, { ...input, corrections: [correction] })).rejects.toThrow("already supported");
+});
+
+test("a learned pattern needs independent owner feedback and retiring it blocks reuse of the same sources", async () => {
+  const w = await world({ charterMode: "auto" });
+  const about = "tone";
+  const ownerMessage = (text: string) => w.owner.call(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text } });
+  const first = await ownerMessage("Three lines are enough.");
+  const firstRecord = (await w.records("message.sent")).find((row) => (row.data as { id: string }).id === first.id)!;
+  const firstTurn = await w.agents("agent.turn.queued", { agent: "rin", turn: first.id, kind: "message", author: { kind: "owner" }, text: "Three lines are enough." });
+  const correct = async (source: string) => (await w.rin.call(rinCorrect, { about, what: "Keep it brief", source })).correction;
+  const a = await correct(first.id);
+  const alias = await correct(firstTurn);
+  const b = await correct((await ownerMessage("That was long again.")).id);
+  const input = { about, preference: "concise", basis: "pattern" } as const;
+  await expect(w.rin.call(rinCharterLearn, { ...input, corrections: [a, a, alias] })).rejects.toThrow("2 distinct records");
+  const learned = await w.rin.call(rinCharterLearn, { ...input, corrections: [a, alias, b] });
+  expect((await w.owner.call(rinCharter, {})).rules[0]?.learning).toMatchObject({
+    basis: "pattern", evidence: [{ correction: a, record: String(firstRecord.id) }, { correction: b }],
+  });
+  await w.owner.call(rinCharterRetire, { rule: learned.rule });
+  await expect(w.rin.call(rinCharterLearn, {
+    ...input, basis: "explicit", corrections: [await correct(String(firstRecord.id))],
+  })).rejects.toThrow("already supported");
+});
+
+test("switching an existing host from ask to auto preserves its pending owner decision", async () => {
+  const first = await world();
+  const { correction } = await first.owner.call(rinCorrect, { about: "tone", what: "Use everyday language" });
+  const learn = { about: "tone", preference: "plain-language", basis: "explicit", corrections: [correction] } as const;
+  expect(first.offered.agents[0]?.hands).not.toContain("rin.charter.learn");
+  await expect(first.rin.call(rinCharterLearn, { ...learn, corrections: [correction] })).rejects.toThrow("requires auto charter mode");
+  const proposed = await first.rin.call(rinCharterPropose, { about: "attention.backups", text: "Raise failed backups again after a day" });
+  const request = await asked(first, 1);
+  const checkpoint = (await first.records("request.created"))[0]!;
+  await first.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => (await first.records("rin.charter.ruled")).length === 1);
+  await first.host.close();
+
+  const restored = await world({ charterMode: "auto" }, NOON, undefined, false, true, {
+    prepareHome: async (path) => {
+      await cp(first.home, path, { recursive: true });
+      const db = new Database(`${path}/${JOURNAL_FILE}`);
+      try {
+        db.run("DELETE FROM links WHERE from_id IN (SELECT id FROM records WHERE seq > ?)", [checkpoint.seq]);
+        db.run("DELETE FROM records WHERE seq > ?", [checkpoint.seq]);
+      } finally {
+        db.close();
+      }
+    },
+  });
+  expect((await asked(restored, 1)).id).toBe(request.id);
+  expect((await restored.owner.call(rinCharter, {})).rules).toMatchObject([{ rule: proposed.rule, status: "proposed" }]);
+  await restored.rin.call(rinCharterLearn, { ...learn, corrections: [correction] });
+  expect((await restored.owner.call(rinCharter, {})).rules.map((one) => one.status)).toEqual(["proposed", "learned"]);
+  expect(await restored.records("rin.charter.ruled")).toHaveLength(0);
+  await restored.owner.call(requestAnswer, { id: request.id, answer: { ids: ["confirm"] } });
+  await eventually(async () => (await restored.records("rin.charter.ruled")).length === 1);
+  expect(await restored.records("request.created")).toHaveLength(1);
+});
+
+test("an active learned preference survives restart and ask mode prevents new learning", async () => {
+  const first = await world({ charterMode: "auto" });
+  const { correction } = await first.owner.call(rinCorrect, { about: "tone", what: "Leave jokes out" });
+  const learned = await first.rin.call(rinCharterLearn, { about: "tone", preference: "no-humor", basis: "explicit", corrections: [correction] });
+  await first.host.close();
+  const restored = await world({}, NOON, undefined, false, true, {
+    prepareHome: (path) => cp(first.home, path, { recursive: true }),
+  });
+  expect((await restored.owner.call(rinPromptCharter, { agent: "rin" })).text).toContain(learned.rule);
+  const next = await restored.owner.call(rinCorrect, { about: "tone", what: "Include more context" });
+  await expect(restored.rin.call(rinCharterLearn, {
+    about: "tone", preference: "more-context", basis: "explicit", corrections: [next.correction],
+  })).rejects.toThrow("requires auto charter mode");
+  await restored.owner.call(rinCharterRetire, { rule: learned.rule });
+  expect((await restored.owner.call(rinPromptCharter, { agent: "rin" })).text).not.toContain(learned.rule);
 });
 
 test("the ask for a rule reaches her from the record that says one is due, also when telling her paused", async () => {

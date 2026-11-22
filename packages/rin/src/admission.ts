@@ -20,7 +20,8 @@ export const occasionGuard = <T extends { key: string }>(
 
 interface CharterAdmission {
   readonly corrections: ReadonlyMap<string, "new" | "asked" | "covered">;
-  readonly rules: ReadonlyMap<string, "proposed" | "ruled" | "declined" | "retired">;
+  readonly learnedSources: ReadonlySet<string>;
+  readonly rules: ReadonlyMap<string, "proposed" | "ruled" | "learned" | "declined" | "retired">;
 }
 
 export const charterGuard = <T extends { about: string }>(
@@ -30,7 +31,7 @@ export const charterGuard = <T extends { about: string }>(
   guard: {
     group: "charter",
     key: (data) => data.about,
-    initial: () => ({ corrections: new Map(), rules: new Map() }),
+    initial: () => ({ corrections: new Map(), learnedSources: new Set(), rules: new Map() }),
     admit,
     fold,
   },
@@ -40,7 +41,7 @@ export function ruleStatus(status: "ruled" | "declined" | "retired") {
   return charterGuard<{ about: string; rule: string }>(
     (state, data) => {
       const current = state.rules.get(data.rule);
-      if (current === "proposed" || (current === "ruled" && status === "retired")) return;
+      if (current === "proposed" || ((current === "ruled" || current === "learned") && status === "retired")) return;
       return { code: "rule-closed", reason: `Rule ${data.rule} can no longer be ${status}` };
     },
     (state, data) => ({ ...state, rules: new Map(state.rules).set(data.rule, status) }),
